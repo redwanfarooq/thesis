@@ -1,0 +1,17 @@
+sample_id	hto	hash_id	cells_loaded	donor	processing_batch	experiment	chemistry	hto_panel	adt_panel
+3530145-A	HTO_01	Natalizumab	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-A	HTO_02	1	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-A	HTO_03	2	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-A	HTO_04	3	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-B	HTO_01	Natalizumab	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-B	HTO_02	1	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-B	HTO_03	2	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530145-B	HTO_04	3	5000	3530145	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-F	HTO_01	2	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-F	HTO_02	3	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-F	HTO_03	5	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-F	HTO_04	Relapse	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-G	HTO_01	2	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-G	HTO_02	3	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-G	HTO_03	5	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0
+3530194-G	HTO_04	Relapse	8000	3530194	KA-004	CITE-seq	10x 3' Gene Expression + Feature Barcoding v4	TotalSeq-B Anti-Human Hashtag	TotalSeq-B Human Universal Cocktail v1.0

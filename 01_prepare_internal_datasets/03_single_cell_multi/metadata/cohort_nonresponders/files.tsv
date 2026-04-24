@@ -1,0 +1,5 @@
+sample_id	hdf5	metadata
+3530145-A	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/finalised/3530145-A/decontaminated_matrix.h5	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/droplet_qc/3530145-A/metadata.tsv.gz
+3530145-B	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/finalised/3530145-B/decontaminated_matrix.h5	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/droplet_qc/3530145-B/metadata.tsv.gz
+3530194-F	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/finalised/3530194-F/decontaminated_matrix.h5	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/droplet_qc/3530194-F/metadata.tsv.gz
+3530194-G	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/finalised/3530194-G/decontaminated_matrix.h5	/project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_03/qc/droplet_qc/3530194-G/metadata.tsv.gz

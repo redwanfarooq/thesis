@@ -1,0 +1,505 @@
+---
+title: Mapping QC report
+date: today
+format:
+  html:
+    toc: true
+    theme: cosmo
+    embed-resources: true
+    code-tools:
+        source: true
+execute:
+  echo: false
+  warning: false
+jupyter: python3
+ipynb-shell-interactivity: all
+---
+
+```{python}
+# | tags: [parameters]
+input_dir = ""
+samples = ""
+```
+
+```{python}
+import os
+import glob
+import re
+import itertools
+import session_info
+import pandas as pd
+import plotly.express as px
+import panel as pn
+from IPython.display import Markdown
+
+pn.extension("tabulator")
+pn.extension("plotly")
+```
+
+```{python}
+PATHS = {
+    "starsolo": ["starsolo/{sample}/**/Summary.csv"],
+    "barcounter": ["barcounter/{sample}/{sample}_BarCounter.log"],
+    "chromap": [
+        "chromap_macs2/{sample}/chromap.out",
+        "chromap_macs2/{sample}/chromap_summary.csv",
+    ],
+    "macs2": ["chromap_macs2/{sample}/macs2_peaks.narrowPeak"],
+}
+
+TRANSLATE_COLNAMES = {
+    "starsolo": {
+        "Number of Reads": "Total Reads",
+        "Sequencing Saturation": "% Saturation",
+        "Reads With Valid Barcodes": "% Valid Barcode",
+        "Reads Mapped to Genome: Unique": "% Mapped (Genome)",
+        "Reads Mapped to GeneFull_Ex50pAS: Unique GeneFull_Ex50pAS": "% Mapped (Transcriptome)",
+    },
+    "barcounter": {
+        "total_reads": "Total Reads",
+        "valid_barcode": "% Valid Barcode",
+        "valid_tag": "% Valid Tag",
+    },
+    "chromap_macs2": {
+        "total_reads": "Total Reads",
+        "duplicated": "% Duplicated",
+        "valid_barcode": "% Valid Barcode",
+        "mapped": "% Mapped",
+        "total_peaks": "Total Peaks",
+    },
+}
+```
+
+```{python}
+samples = samples.split(",")
+samples.sort()
+files = {k: {sample: [] for sample in samples} for k in PATHS.keys()}
+for k in files.keys():
+    for sample in files[k].keys():
+        for _ in PATHS[k]:
+            files[k][sample] += glob.glob(
+                os.path.join(input_dir, _.format(sample=sample)), recursive=True
+            )
+```
+
+```{python}
+def get_barcounter_metrics(logfile: os.PathLike) -> pd.DataFrame:
+    with open(logfile, mode="r") as file:
+        lines = file.readlines()[-6:-1]
+    df = (
+        pd.DataFrame(
+            data={
+                k: v
+                for k, v in [
+                    re.search(pattern="\\t(.*)\\n", string=str(_)).group(1).split(": ")
+                    for _ in lines
+                ]
+            },
+            index=[0],
+        )
+        .rename(columns={"Total reads processed": "total_reads"})
+        .assign(
+            valid_barcode=lambda x: [int(valid) / int(total) for valid, total in zip(x["Total Valid barcodes"], x["total_reads"])],
+            valid_tag=lambda x: [int(valid) / int(total) for valid, total in zip(x["Valid tags"], x["total_reads"])],
+        )
+    )
+    return df[["total_reads", "valid_barcode", "valid_tag"]]
+
+
+def get_chromap_metrics(logfile: os.PathLike, summary: os.PathLike) -> pd.DataFrame:
+    with open(logfile, mode="r") as file:
+        lines = file.readlines()[-14:-4]
+    df_logfile = pd.DataFrame(
+        data={
+            k: (
+                int(v)
+                if k in {"Number of barcodes in whitelist", "Number of corrected barcodes"}
+                else int(v) / 2
+            )
+            for k, v in [
+                re.search(pattern="(.*)\\.\\n", string=str(_)).group(1).split(": ")
+                for _ in lines
+            ]
+        },
+        index=[0],
+    )
+    df_summary = pd.DataFrame(
+        pd.read_csv(summary, header=0, index_col=0).aggregate(sum)
+    ).transpose()
+
+    df = (
+        pd.concat([df_logfile, df_summary], axis=1)
+        .assign(
+            valid_barcode=lambda x: [
+                (int(valid) + int(corrected)) / int(total)
+                for valid, corrected, total in zip(
+                    x["Number of barcodes in whitelist"],
+                    x["Number of corrected barcodes"],
+                    x["Number of reads"],
+                )
+            ],
+            duplicated=lambda x: [
+                int(duplicated) / (int(total) - int(unmapped) - int(lowmapq))
+                for duplicated, total, unmapped, lowmapq in zip(
+                    x["duplicate"], x["total"], x["unmapped"], x["lowmapq"]
+                )
+            ],
+            mapped=lambda x: [
+                1 - ((int(unmapped) + int(lowmapq)) / int(total)) for unmapped, lowmapq, total in zip(x["unmapped"], x["lowmapq"], x["total"])
+            ],
+        )
+        .rename(columns={"Number of reads": "total_reads"})
+    )
+    return df[["total_reads", "duplicated", "valid_barcode", "mapped"]]
+
+
+def get_macs2_metrics(peakfile: os.PathLike) -> pd.DataFrame:
+    df = pd.DataFrame(
+        data={
+            "total_peaks": pd.read_csv(
+                peakfile,
+                sep=None,
+                engine="python",
+                header=None,
+                usecols=[0, 1, 2],
+            )
+            .drop_duplicates()
+            .shape[0]
+        },
+        index=[0],
+    )
+    return df
+```
+
+```{python}
+os.makedirs("mapping_qc_data", exist_ok=True)
+```
+
+# Overview
+
+Summary statistics for mapping/alignment tools in preprocessing pipeline
+
+::: {.callout-note title="Source Directory"}
+`{python} Markdown(f"<pre>{input_dir}</pre>")`
+:::
+
+```{python}
+if any(itertools.chain.from_iterable(files["starsolo"].values())):
+    Markdown(
+"""
+# STARsolo (GEX)
+
+Splicing-aware alignment to reference genome/transcriptome, barcode/UMI correction and UMI
+counting for gene expression libraries
+
+::: {.callout-tip title="Metrics"}
+**Total Reads** total number of sequenced read pairs  
+**% Saturation** fraction of reads originating from an already-observed UMI  
+**% Valid Barcode** fraction of reads with cell barcode matching whitelist  
+**% Mapped (Genome)** fraction of reads mapped to a unique region in the genome  
+**% Mapped (Transcriptome)** fraction of reads mapped to a unique gene in the transcriptome
+:::
+"""
+    )
+```
+
+```{python}
+if any(itertools.chain.from_iterable(files["starsolo"].values())):
+    df = [
+        pd.read_csv(files[0], header=None, index_col=0)
+        .transpose()
+        .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+        .dropna(axis=1)
+        .assign(Sample=sample)
+        for sample, files in files["starsolo"].items()
+    ]
+    df = pd.concat(df, axis=0, ignore_index=True).rename(
+        columns=TRANSLATE_COLNAMES["starsolo"]
+    )
+    fraction_cols = df.filter(regex="^\\%").columns
+    df.loc[:, fraction_cols] = df.loc[:, fraction_cols].apply(
+        lambda x: round(x * 100, ndigits=1)
+    )
+
+    cols = [
+        "Sample",
+        "Total Reads",
+        "% Saturation",
+        "% Valid Barcode",
+        "% Mapped (Genome)",
+        "% Mapped (Transcriptome)",
+    ]
+
+    table = pn.widgets.Tabulator(
+        df[cols],
+        header_filters={
+            "Sample": {
+                "type": "input",
+                "func": "like",
+                "placeholder": "Enter Sample",
+            },
+        },
+        formatters={
+            x: {"type": "progress", "max": 100, "legend": True, "color": "#E5ECF6"}
+            for x in cols
+            if re.match(pattern="^\\%", string=str(x))
+        },
+        editors={x: None for x in cols},
+        selectable=False,
+        layout="fit_data_table",
+        max_width=780,
+        widths={x: 125 for x in cols[1:]},
+        show_index=False,
+        frozen_columns=["Sample"],
+        theme="bootstrap",
+    )
+
+    bar_reads = (
+        px.bar(
+            df[cols],
+            x="Total Reads",
+            y="Sample",
+            category_orders={"Sample": sorted(df["Sample"].unique())}
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df["Sample"].unique()),
+        )
+        .update_yaxes(
+            title="",
+        )
+    )
+    bar_reads = pn.pane.Plotly(bar_reads)
+
+    pn.Tabs(("Summary", table), ("Total Reads", bar_reads)).servable()
+
+    df[cols].to_csv("mapping_qc_data/starsolo_stats.tsv", sep="\t", index=False)
+```
+
+```{python}
+if any(itertools.chain.from_iterable(files["chromap"].values())) and any(
+    itertools.chain.from_iterable(files["macs2"].values())
+):
+    Markdown(
+"""
+# chromap/MACS2 (ATAC)
+
+Adapter trimming, alignment of fragments (paired-end reads) to reference genome, barcode correction,
+deduplication, Tn5 shifting, peak calling and counting of fragments overlapping peaks for assay for
+transposase-accessible chromatin libraries.
+
+::: {.callout-tip title="Metrics"}
+**Total Reads** total number of sequenced read pairs  
+**% Duplicated** fraction of PCR duplicated fragments  
+**% Valid Barcode** fraction of reads with cell barcode matching whitelist  
+**% Mapped** fraction of fragments mapped to a unique region in the genome with quality score > 30  
+**Total Peaks** total number of called peaks
+:::
+"""
+    )
+```
+
+```{python}
+if any(itertools.chain.from_iterable(files["chromap"].values())) and any(
+    itertools.chain.from_iterable(files["macs2"].values())
+):
+    df_chromap = [
+        get_chromap_metrics(logfile=files[0], summary=files[1])
+        .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+        .dropna(axis=1)
+        .assign(Sample=sample)
+        for sample, files in files["chromap"].items()
+    ]
+    df_chromap = pd.concat(df_chromap, axis=0, ignore_index=True)
+
+    df_macs2 = [
+        get_macs2_metrics(peakfile=files[0])
+        .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+        .dropna(axis=1)
+        .assign(Sample=sample)
+        for sample, files in files["macs2"].items()
+    ]
+    df_macs2 = pd.concat(df_macs2, axis=0, ignore_index=True)
+    df = pd.merge(df_chromap, df_macs2, on="Sample").rename(
+        columns=TRANSLATE_COLNAMES["chromap_macs2"]
+    )
+    fraction_cols = df.filter(regex="^\\%").columns
+    df.loc[:, fraction_cols] = df.loc[:, fraction_cols].apply(
+        lambda x: round(x * 100, ndigits=1)
+    )
+
+    cols = [
+        "Sample",
+        "Total Reads",
+        "% Duplicated",
+        "% Valid Barcode",
+        "% Mapped",
+        "Total Peaks",
+    ]
+
+    table = pn.widgets.Tabulator(
+        df[cols],
+        header_filters={
+            "Sample": {
+                "type": "input",
+                "func": "like",
+                "placeholder": "Enter Sample",
+            },
+        },
+        formatters={
+            x: {"type": "progress", "max": 100, "legend": True, "color": "#E5ECF6"}
+            for x in cols
+            if re.match(pattern="^\\%", string=str(x))
+        },
+        editors={x: None for x in cols},
+        selectable=False,
+        layout="fit_data_table",
+        max_width=780,
+        widths={x: 125 for x in cols[1:]},
+        show_index=False,
+        frozen_columns=["Sample"],
+        theme="bootstrap",
+    )
+
+    bar_reads = (
+        px.bar(
+            df[cols],
+            x="Total Reads",
+            y="Sample",
+            category_orders={
+                "Sample": sorted(df["Sample"].unique())
+            }
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df["Sample"].unique()),
+        )
+        .update_yaxes(
+            title="",
+        )
+    )
+    bar_reads = pn.pane.Plotly(bar_reads)
+
+    bar_peaks = (
+        px.bar(
+            df[cols],
+            x="Total Peaks",
+            y="Sample",
+            category_orders={
+                "Sample": sorted(df["Sample"].unique())
+            }
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 *len(df["Sample"].unique()),
+        )
+        .update_yaxes(
+            title="",
+        )
+    )
+    bar_peaks = pn.pane.Plotly(bar_peaks)
+
+    pn.Tabs(("Summary", table), ("Total Reads", bar_reads), ("Total Peaks", bar_peaks)).servable()
+
+    df[cols].to_csv("mapping_qc_data/chromap_macs2_stats.tsv", sep="\t", index=False)
+```
+
+```{python}
+if any(itertools.chain.from_iterable(files["barcounter"].values())):
+    Markdown(
+"""
+# BarCounter (ADT/HTO)
+
+Barcode correction and UMI counting for antibody-derived tag libraries
+
+::: {.callout-tip title="Metrics"}
+**Total Reads** total number of sequenced read pairs  
+**% Valid Barcode** fraction of reads with cell barcode matching whitelist  
+**% Valid Tag** fraction of reads with antibody tag matching whitelist
+:::
+"""
+    )
+```
+
+```{python}
+if any(itertools.chain.from_iterable(files["barcounter"].values())):
+    df = [
+        get_barcounter_metrics(logfile=files[0])
+        .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+        .dropna(axis=1)
+        .assign(Sample=sample)
+        for sample, files in files["barcounter"].items()
+    ]
+    df = pd.concat(df, axis=0, ignore_index=True).rename(
+        columns=TRANSLATE_COLNAMES["barcounter"]
+    )
+    fraction_cols = df.filter(regex="^\\%").columns
+    df.loc[:, fraction_cols] = df.loc[:, fraction_cols].apply(
+        lambda x: round(x * 100, ndigits=1)
+    )
+
+    cols = [
+        "Sample",
+        "Total Reads",
+        "% Valid Barcode",
+        "% Valid Tag",
+    ]
+
+    table = pn.widgets.Tabulator(
+        df[cols],
+        header_filters={
+            "Sample": {
+                "type": "input",
+                "func": "like",
+                "placeholder": "Enter Sample",
+            },
+        },
+        formatters={
+            x: {"type": "progress", "max": 100, "legend": True, "color": "#E5ECF6"}
+            for x in cols
+            if re.match(pattern="^\\%", string=str(x))
+        },
+        editors={x: None for x in cols},
+        selectable=False,
+        layout="fit_data_table",
+        max_width=780,
+        widths={x: 125 for x in cols[1:]},
+        show_index=False,
+        frozen_columns=["Sample"],
+        theme="bootstrap",
+    )
+
+    bar_reads = (
+        px.bar(
+            df[cols],
+            x="Total Reads",
+            y="Sample",
+            category_orders={
+                "Sample": sorted(df["Sample"].unique())
+            }
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df["Sample"].unique()),
+        )
+        .update_yaxes(
+            title="",
+        )
+    )
+    bar_reads = pn.pane.Plotly(bar_reads)
+
+    pn.Tabs(("Summary", table), ("Total Reads", bar_reads)).servable()
+
+    df[cols].to_csv("mapping_qc_data/barcounter_stats.tsv", sep="\t", index=False)
+```
+
+```{python}
+#| include: false
+os.system("zip -FSmr mapping_qc_data.zip mapping_qc_data")
+```
+
+# Session Info
+
+```{python}
+session_info.show(dependencies=True, std_lib=True)
+```

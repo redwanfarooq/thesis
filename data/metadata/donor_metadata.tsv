@@ -1,0 +1,16 @@
+donor_id	age	sex	bmi	disease_type	disease_duration	relapses_last_2_yr	relapses_last_yr	last_relapse_interval	mri_baseline_activity	relapses_on_ocrelizumab	mri_on_ocrelizumab_activity	edss_edmus	treatment_naive	prior_dmt	infusion_1_date	infusion_2_interval	infusion_3_interval	infusion_4_interval	infusion_5_interval
+OCRZ003	19	M	26.61	RR_high	0	4	4	4	new	0	none	1	TRUE	NA	2019-06-26	14	189	303	263
+OCRZ004	24	F	22.48	RR_high	1	2	2	1	new	0	none	1.5	TRUE	NA	2019-07-10	14	226	259	252
+OCRZ011	39	M	23.71	RR_low	0	1	1	4	enhancing	0	none	1	TRUE	NA	2019-09-11	14	405	483	427
+OCRZ012	46	F	32.66	RR_high	1	6	2	9	none	0	none	6	TRUE	NA	2019-09-18	14	156	287	270
+OCRZ013	44	F	26.78	RR_high	0	3	2	4	none	0	none	5	TRUE	NA	2019-10-02	14	307	343	322
+OCRZ014	47	F	25.48	RR_high	1	4	3	8	enhancing	0	none	5	TRUE	NA	2019-11-06	14	328	290	270
+OCRZ019	61	F	28.83	PP	2	0	0	NA	enhancing	0	none	6	TRUE	NA	2020-01-14	15	202	287	409
+OCRZ020	24	F	23.83	RR_low	1	2	1	12	none	0	none	3	TRUE	NA	2020-01-07	14	308	385	280
+OCRZ022	60	M	24.81	PP	3	0	0	NA	new	0	none	6	TRUE	NA	2020-01-29	14	202	231	245
+OCRZ023	52	M	29.76	PP	4	0	0	NA	enhancing	0	none	5	TRUE	NA	2020-02-04	15	331	319	245
+OCRZ031	54	M	26.29	PP	1	0	0	NA	new	0	none	4	TRUE	NA	2021-06-15	14	287	266	371
+OCRZ033	53	M	24.95	PP	9	0	0	NA	enhancing	0	none	6	TRUE	NA	2021-07-06	14	224	266	252
+OCRZ043	34	M	27.71	RR_low	1	1	1	7	new	0	none	1	TRUE	NA	2022-03-08	14	287	273	283
+OCRZ045	54	F	22.9	RR_low	10	2	1	12	new	0	none	3	TRUE	NA	2022-05-17	14	259	280	276
+3530194	34	M	47.44	RR_low	1	2	0	41	none	2	none	2	TRUE	NA	2023-03-07	14	191	194	168

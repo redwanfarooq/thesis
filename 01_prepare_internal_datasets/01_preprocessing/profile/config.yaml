@@ -1,0 +1,136 @@
+##########################################################################################
+# Configuration file for Snakemake profile
+# Author: Redwan Farooq
+##########################################################################################
+
+
+# --------------------------------------------------
+# General parameters
+# --------------------------------------------------
+# See documentation for Snakemake for full list of
+# available command line flags:
+# https://snakemake.readthedocs.io/
+# ***
+# Modifying this section may prevent loading of
+# environment modules and/or conda environments
+jobscript: jobscript.sh
+use-envmodules: true
+use-conda: true
+# ***
+local-cores: 1
+jobs: 100
+latency-wait: 60
+keep-going: true
+printshellcmds: true
+
+
+# --------------------------------------------------
+# Cluster parameters
+# --------------------------------------------------
+# If 'cluster' not specified, defaults to local
+# execution
+# Shell command for job submission
+cluster:
+  mkdir -p slurm/{rule} &&
+  sbatch
+    --partition={resources.partition}
+    --ntasks={resources.tasks}
+    --cpus-per-task={threads}
+    --gpus-per-task={resources.gpus}
+    --mem={resources.mem_mb}
+    --time={resources.runtime}
+    --job-name={rule}.{jobid}
+    --output=slurm/{rule}/%x-%j.out
+    --parsable
+# Shell command for job cancellation
+cluster-cancel: scancel
+# Job name
+jobname: '{rule}.{jobid}'
+# Default global job resources
+default-resources:
+  partition: short
+  tasks: 1
+  gpus: 0
+  disk_mb: null
+  mem_mib: null
+# Specified job resources for each rule (will
+# override defaults)
+set-threads:
+  bcl2fastq: 16
+  trimfastq: 16
+  linkfastq: 1
+  cellranger: 48
+  cellranger_atac: 48
+  cellranger_arc: 48
+  cellranger_vdj: 48
+  cellranger_multi: 48
+  starsolo: 16
+  chromap: 16
+  macs2: 16
+  barcounter: 1
+  barcode_translate: 1
+  fastqc: 10
+  multiqc: 1
+  count_reads: 1
+  mapping_qc: 1
+# 'mem' and 'runtime' are Snakemake standard resources
+# Values supplied are parsed by the 'humanfriendly'
+# package
+# 'mem' accepts a number followed by a unit (B, KB,
+# MB, GB, TB, PB, KiB, MiB, GiB, TiB, PiB); converted
+# to MB and passed to 'mem_mb'
+# 'runtime' accepts a number followed by a unit (ms, s,
+# m, h, d, w, y for seconds, minutes, hours, days, weeks 
+# and years, respectively); converted to minutes
+set-resources:
+  bcl2fastq:
+    mem: 20GiB
+    runtime: 3h
+  trimfastq:
+    mem: 20GiB
+    runtime: 3h
+  linkfastq:
+    mem: 1GiB
+    runtime: 1h
+  fastqc:
+    mem: 5GiB
+    runtime: 3h
+  multiqc:
+    mem: 5GiB
+    runtime: 1h
+  count_reads:
+    mem: 5GiB
+    runtime: 1h
+  cellranger:
+    mem: 250GiB
+    runtime: 6h
+  cellranger_atac:
+    mem: 250GiB
+    runtime: 6h
+  cellranger_arc:
+    mem: 250GiB
+    runtime: 6h
+  cellranger_vdj:
+    mem: 250GiB
+    runtime: 6h
+  cellranger_multi:
+    mem: 250GiB
+    runtime: 6h
+  starsolo:
+    mem: 50GiB
+    runtime: 3h
+  chromap:
+    mem: 50GiB
+    runtime: 3h
+  macs2:
+    mem: 50GiB
+    runtime: 1h
+  barcounter:
+    mem: 50GiB
+    runtime: 1h
+  barcode_translate:
+    mem: 5GiB
+    runtime: 1h
+  mapping_qc:
+    mem: 5GiB
+    runtime: 1h

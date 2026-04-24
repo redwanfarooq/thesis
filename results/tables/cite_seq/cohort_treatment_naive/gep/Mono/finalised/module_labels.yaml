@@ -1,0 +1,11 @@
+'1': Classical (S100A8/S100A9/VCAN)
+'10': Monocyte-Platelet Aggregate (PPBP/PF4)
+'11': T/NK Contamination
+'2': Homeostatic (ZBTB20/MEF2C/CLEC2D)
+'3': Non-classical (FCGR3A/CX3CR1)
+'4': Adhesion/Migration (CD44/VIM/EZR)
+'5': Activation Signalling (IER2/FOS/JUN)
+'6': Antigen Presentation (MHC-II/CD74)
+'7': Adaptive Lipid Metabolism (PPARG/ABCA1)
+'8': IL1Bhi Inflammatory (IL1B/CXCL8/CD83)
+'9': Type 1 Interferon Response (MX1/IFI44)

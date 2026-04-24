@@ -1,0 +1,17 @@
+name: bcl2fastq
+channels:
+  - bih-cubi
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=4.5
+  - bcl2fastq2=2.20.0.422
+  - libgcc=7.2.0
+  - libgcc-ng=13.1.0
+  - libgomp=13.1.0
+  - libstdcxx-ng=13.1.0
+  - libzlib=1.2.13
+  - zlib=1.2.13
+

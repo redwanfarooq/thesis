@@ -1,0 +1,113 @@
+##########################################################################################
+# Module rule specifications file for Snakemake preprocessing pipeline
+# Author: Redwan Farooq
+##########################################################################################
+
+# --------------------------------------------------
+# Modules
+# --------------------------------------------------
+# Available pipeline module names and lists of rule
+# names (as per *.smk file names) in each module
+gex:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - starsolo
+  - barcounter
+  - mapping_qc
+atac:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - chromap
+  - macs2
+  - mapping_qc
+gex_atac:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - starsolo
+  - chromap
+  - macs2
+  - mapping_qc
+cite_seq:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - starsolo
+  - barcounter
+  - mapping_qc
+tea_seq:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - starsolo
+  - chromap
+  - macs2
+  - barcounter
+  - mapping_qc
+gex_fb_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger
+atac_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger_atac
+gex_atac_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger_arc
+vdj_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger_vdj
+tea_seq_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger_arc
+  - barcounter
+  - mapping_qc
+gex_fb_vdj_cellranger:
+  - bcl2fastq
+  - trimfastq
+  - linkfastq
+  - fastqc
+  - multiqc
+  - count_reads
+  - cellranger_multi

@@ -1,0 +1,698 @@
+---
+title: Single cell QC summary report
+date: today
+format:
+  html:
+    toc: true
+    theme: cosmo
+    embed-resources: true
+    code-tools:
+        source: true
+execute:
+  echo: false
+  warning: false
+jupyter: python3
+ipynb-shell-interactivity: all
+---
+
+```{python}
+# | tags: [parameters]
+input_dir = ""
+samples = ""
+read_counts = ""
+target_depth = "KEY:VALUE"
+```
+
+```{python}
+import os
+import gzip
+import re
+import session_info
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import panel as pn
+from IPython.display import Markdown
+
+pn.extension("tabulator")
+pn.extension("plotly")
+```
+
+```{python}
+PATHS = {
+    "droplet_qc": [
+        "droplet_qc/{sample}/barcode_stats.tsv.gz",
+        "droplet_qc/{sample}/hto_signal.tsv.gz",
+        "droplet_qc/{sample}/metadata.tsv.gz",
+    ],
+    "libraries_qc": [
+        "libraries_qc/{sample}/qc_filters.tsv.gz",
+        "libraries_qc/{sample}/cell_barcodes.txt.gz",
+    ],
+}
+
+TRANSLATE_COLNAMES = {
+    "droplet_qc": {
+        "cells_loaded": "Cells Loaded",
+        "cells_recovered": "Cells Recovered",
+        "fraction_singlet": "% Singlet",
+        "fraction_multiplet": "% Multiplet",
+        "fraction_undetermined": "% Undetermined",
+    },
+    "libraries_qc": {
+        "All": "Cells Passed",
+        "fraction_fail": "% Excluded",
+    },
+}
+
+COLOURS = {
+    "pass": "mediumseagreen",
+    "borderline": "orange",
+    "fail": "tomato",
+}
+```
+
+```{python}
+samples = samples.split(",")
+samples.sort()
+files = {k: {sample: [] for sample in samples} for k in PATHS.keys()}
+for k in files.keys():
+    for sample in files[k].keys():
+        for _ in PATHS[k]:
+            files[k][sample].append(os.path.join(input_dir, _.format(sample=sample)))
+target_depth = {_.split(":")[0]: int(_.split(":")[1]) for _ in target_depth.split(",")}
+```
+
+```{python}
+def eval_depth(x: pd.Series, targets: dict) -> list[str] | None:
+    return [
+        (
+            "pass"
+            if _ > targets[x.name]
+            else "borderline" if _ > targets[x.name] * 0.9 else "fail"
+        )
+        for _ in x
+    ]
+
+def has_hashing_assignments(file: str) -> bool:
+    with gzip.open(file, "rt", encoding="utf-8") as f:
+        header = f.readline().strip().split("\t")
+        return "hash_id" in header
+```
+
+```{python}
+os.makedirs("summary_data", exist_ok=True)
+```
+
+# Overview
+
+Summary statistics for single cell QC pipeline
+
+::: {.callout-note title="Source Directory"}
+`{python} Markdown(f"<pre>{input_dir}</pre>")`
+:::
+
+# GEM metrics
+
+Summary statistics for gel bead-in-emulsion (GEM)-level QC per 10x Chromium well.
+
+```{python}
+df_barcode_metrics = [
+    pd.read_csv(files[0], sep="\t", header=0, index_col=None)
+    .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+    .assign(Sample=sample)
+    for sample, files in files["droplet_qc"].items()
+]
+df_barcode_metrics = pd.concat(df_barcode_metrics, axis=0, ignore_index=True).rename(
+    columns=TRANSLATE_COLNAMES["droplet_qc"]
+)
+fraction_cols = df_barcode_metrics.filter(regex="^\\%").columns
+df_barcode_metrics.loc[:, fraction_cols] = df_barcode_metrics.loc[
+    :, fraction_cols
+].apply(lambda x: round(x * 100, ndigits=1))
+
+metrics = {
+    "Cells Loaded": "estimated number of cells loaded",
+    "Cells Recovered": "total number of GEM barcodes containing at least 1 cell",
+    "% Singlet": "fraction of cell-containing GEM barcodes containing only 1 cell",
+    "% Multiplet": "fraction of cell-containing GEM barcodes containing more than 1 cell",
+    "% Undetermined": "fraction of cell-containing GEM barcodes of undetermined type",
+}
+
+Markdown(
+    "::: {.callout-tip title='Metrics'}\n"
+    + "\n".join(
+        [
+            f"**{k}** {v}  "
+            for k, v in metrics.items()
+            if k in df_barcode_metrics.columns
+        ]
+    )
+    + "\n:::"
+)
+
+cols = [
+    "Sample",
+    "Cells Loaded",
+    "Cells Recovered",
+] + [
+    _
+    for _ in {"% Singlet", "% Multiplet", "% Undetermined"}
+    if _ in df_barcode_metrics.columns
+]
+
+table = pn.widgets.Tabulator(
+    df_barcode_metrics[cols],
+    header_filters={
+        "Sample": {
+            "type": "input",
+            "func": "like",
+            "placeholder": "Enter Sample",
+        },
+    },
+    formatters={
+        x: {"type": "progress", "max": 100, "legend": True, "color": "#E5ECF6"}
+        for x in cols
+        if re.match(pattern="^\\%", string=str(x))
+    },
+    editors={x: None for x in cols},
+    selectable=False,
+    layout="fit_data_table",
+    max_width=780,
+    widths={x: 125 for x in cols[1:]},
+    show_index=False,
+    frozen_columns=["Sample"],
+    theme="bootstrap",
+)
+
+if any([_ in {"singlet", "multiplet", "undetermined"} for _ in df_barcode_metrics.columns]):
+    bar_type = (
+        px.bar(
+            df_barcode_metrics,
+            x=[
+                _
+                for _ in df_barcode_metrics.columns
+                if _ in {"singlet", "multiplet", "undetermined"}
+            ],
+            y="Sample",
+            category_orders={"Sample": sorted(df_barcode_metrics["Sample"].unique())},
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df_barcode_metrics["Sample"].unique()),
+            legend_title_text="",
+        )
+        .update_xaxes(
+            title="Barcodes",
+        )
+        .update_yaxes(
+            title="",
+        )
+        .update_traces(
+            marker_line_width=0,
+        )
+    )
+    bar_type = pn.pane.Plotly(bar_type)
+
+    pn.Tabs(("Summary", table), ("Barcode Type", bar_type)).servable()
+else:
+    pn.Tabs(("Summary", table)).servable()
+
+df_barcode_metrics[cols].to_csv("summary_data/gem_metrics.tsv", sep="\t", index=False)
+```
+
+```{python}
+if read_counts:
+    Markdown(
+"""
+# Sequencing depth
+
+Mean sequencing reads per gel bead-in-emulsion (GEM) barcode containing at least 1 cell.
+"""
+    )
+```
+
+```{python}
+if read_counts:
+    df_sequencing_depth = (
+        pd.read_csv(read_counts, sep="\t", header=0, index_col=None)
+        .rename(
+            columns={"sample": "Sample"},
+        )
+        .merge(df_barcode_metrics[["Sample", "Cells Recovered"]], on="Sample")
+    )
+    df_sequencing_depth.iloc[:, 1:-1] = df_sequencing_depth.iloc[:, 1:-1].apply(
+        lambda x: [int(y) for y in x / df_sequencing_depth["Cells Recovered"]]
+    )
+
+    metrics = {
+        x: f"{target_depth[x]} reads/cell"
+        for x in df_sequencing_depth.iloc[:, 1:-1].columns
+    }
+
+    Markdown(
+        "::: {.callout-tip title='Minimum Requirements'}\n"
+        + "\n".join(
+            [
+                f"**{k}** {v}  "
+                for k, v in metrics.items()
+            ]
+        )
+        + "\n:::"
+    )
+
+    cols = ["Sample"] + list(df_sequencing_depth.columns[[_ not in {"Sample", "Cells Recovered"} for _ in df_sequencing_depth.columns]])
+
+    table = pn.widgets.Tabulator(
+        df_sequencing_depth[cols],
+        header_filters={
+            "Sample": {
+                "type": "input",
+                "func": "like",
+                "placeholder": "Enter Sample",
+            },
+        },
+        formatters={
+            x: {"type": "progress", "max": target_depth[x], "legend": True, "color": "#E5ECF6"}
+            for x in cols[1:]
+        },
+        groups={
+            "Library Type": cols[1:],
+        },
+        editors={x: None for x in cols},
+        selectable=False,
+        layout="fit_data_table",
+        max_width=780,
+        widths={x: 125 for x in cols[1:]},
+        show_index=False,
+        frozen_columns=["Sample"],
+        theme="bootstrap",
+    )
+
+    bar_depth = (
+        px.bar(
+            pd.melt(
+                df_sequencing_depth[cols],
+                id_vars="Sample",
+                value_vars=cols[1:],
+                var_name="Library Type",
+                value_name="Sequencing Depth",
+            ).merge(
+                pd.melt(
+                    df_sequencing_depth[cols[1:]]
+                    .apply(
+                        eval_depth,
+                        axis=0,
+                        targets=target_depth,
+                    )
+                    .assign(Sample=df_sequencing_depth["Sample"]),
+                    id_vars="Sample",
+                    value_vars=cols[1:],
+                    var_name="Library Type",
+                    value_name="Category",
+                ),
+                on=["Sample", "Library Type"],
+            ),
+            x="Sequencing Depth",
+            y="Sample",
+            color="Category",
+            facet_col="Library Type",
+            color_discrete_map=COLOURS,
+            category_orders={"Sample": sorted(df_sequencing_depth["Sample"].unique())},
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df_sequencing_depth["Sample"].unique()),
+            legend_title_text="",
+        )
+        .update_xaxes(
+            title="Reads/Cell",
+            matches=None,
+        )
+        .update_yaxes(
+            title="",
+        )
+        .update_traces(
+            marker_line_width=0,
+        )
+    )
+    bar_depth = pn.pane.Plotly(bar_depth)
+
+    pn.Tabs(("Summary", table), ("Sequencing Depth", bar_depth)).servable()
+
+    df_sequencing_depth[cols].to_csv("summary_data/sequencing_depth.tsv", sep="\t", index=False)
+```
+
+```{python}
+if all(os.path.isfile(files[1]) for files in files["droplet_qc"].values()):
+    Markdown(
+"""
+# Demultiplexing metrics
+
+Summary statistics for demultiplexing hashed samples per 10x Chromium Well.
+"""
+    )
+```
+
+```{python}
+if all(os.path.isfile(files[1]) for files in files["droplet_qc"].values()):
+    df_signal_strength = [
+        pd.read_csv(files[1], sep="\t", header=0, index_col=None)
+        .apply(lambda x: pd.to_numeric(x, downcast="integer", errors="coerce"))
+        .apply(lambda x: round(1 - x, ndigits=3))
+        .assign(Sample=sample)
+        for sample, files in files["droplet_qc"].items()
+    ]
+    df_signal_strength = (
+        pd.concat(df_signal_strength)
+        .sort_values(by="Sample")
+        .reset_index(drop=True)
+    )
+
+    df_assignment = [
+        pd.read_csv(files[2], sep="\t", header=0, index_col=None)[["barcode", "hash_id"]]
+        .groupby("hash_id")
+        .agg("count")
+        .transpose()
+        .assign(Sample=sample)
+        .rename(columns=str)
+        for sample, files in files["droplet_qc"].items()
+    ]
+    df_assignment = (
+        pd.concat(df_assignment)
+        .convert_dtypes()
+        .sort_values(by="Sample")
+        .reset_index(drop=True)
+    )
+
+    metrics = {
+        "Signal Strength": "fraction non-overlap between fitted 'signal' and 'background' probability density function per hashtag (measure of signal-to-noise ratio; ideal >0.99, acceptable >0.9)",
+    }
+
+    Markdown(
+        "::: {.callout-tip title='Metrics'}\n"
+        + "\n".join(
+            [
+                f"**{k}** {v}  "
+                for k, v in metrics.items()
+            ]
+        )
+        + "\n:::"
+    )
+
+    cols = ["Sample"] + list(
+        df_signal_strength.columns[df_signal_strength.columns != "Sample"]
+    )
+
+    table = pn.widgets.Tabulator(
+        df_signal_strength[cols],
+        header_filters={
+            "Sample": {
+                "type": "input",
+                "func": "like",
+                "placeholder": "Enter Sample",
+            },
+        },
+        formatters={
+            x: {"type": "progress", "min": 0.5, "max": 1, "legend": True, "color": "#E5ECF6"}
+            for x in cols[1:]
+        },
+        groups={
+            "Signal Strength": [x for x in cols[1:]],
+        },
+        editors={x: None for x in cols},
+        selectable=False,
+        layout="fit_data_table",
+        max_width=780,
+        widths={x: 125 for x in cols[1:]},
+        show_index=False,
+        frozen_columns=["Sample"],
+        theme="bootstrap",
+    )
+
+    df_signal_strength[cols].to_csv("summary_data/hash_signal_strength.tsv", sep="\t", index=False)
+
+    df_signal_strength = pd.melt(df_signal_strength, id_vars="Sample", value_vars=cols[1:], var_name="HTO", value_name="Signal Strength")
+
+    fig_hto_signal = (
+        px.strip(
+            df_signal_strength,
+            x="Signal Strength",
+            y="HTO",
+            hover_data="Sample",
+            color="HTO",
+            color_discrete_sequence=px.colors.qualitative.D3,
+            stripmode="overlay",
+            range_x=[0.5, 1],
+            category_orders={"HTO": sorted(df_signal_strength["HTO"].unique())},
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(cols[1:]),
+            showlegend=False,
+        )
+        .update_xaxes(
+            title="Signal Strength",
+        )
+        .update_yaxes(
+            title="",
+        )
+        .update_traces(
+            jitter=0,
+            marker={"symbol": "line-ns-open"},
+        )
+    )
+    fig_hto_signal = pn.pane.Plotly(fig_hto_signal)
+
+    cols = ["Sample"] + list(df_assignment.columns[df_assignment.columns != "Sample"].sort_values())
+
+    bar_assignment = (
+        px.bar(
+            df_assignment.fillna(0),
+            x=cols[1:],
+            y="Sample",
+            category_orders={"Sample": sorted(df_assignment["Sample"].unique())},
+        )
+        .update_layout(
+            width=780,
+            height=50 + 30 * len(df_assignment["Sample"].unique()),
+            legend_title_text="",
+        )
+        .update_xaxes(
+            title="Cells",
+        )
+        .update_yaxes(
+            title="",
+        )
+        .update_traces(
+            marker_line_width=0,
+        )
+    )
+    bar_assignment = pn.pane.Plotly(bar_assignment)
+
+    pn.Tabs(
+        ("Summary", table),
+        ("Signal Strength", fig_hto_signal),
+        ("Assignment", bar_assignment),
+    ).servable()
+
+    df_assignment[cols].to_csv("summary_data/hash_assignment.tsv", sep="\t", index=False)
+```
+
+# Cell metrics
+
+Summary statistics for cell-level QC for each library type per 10x Chromium well.
+
+```{python}
+df_qc_filters = [
+    pd.read_csv(files[0], sep="\t", header=0, index_col=0).assign(Sample=sample)
+    for sample, files in files["libraries_qc"].items()
+]
+
+df_qc_metrics = (
+    pd.concat(df_qc_filters, axis=0, ignore_index=True)
+    .groupby("Sample")
+    .agg("sum")
+    .reset_index()
+    .assign(
+        fraction_fail=lambda x: [
+            (total - _) / total
+            for _, total in zip(x["All"], [len(df.index) for df in df_qc_filters])
+        ]
+    )
+    .rename(columns=TRANSLATE_COLNAMES["libraries_qc"])
+)
+fraction_cols = df_qc_metrics.filter(regex="^\\%").columns
+df_qc_metrics.loc[:, fraction_cols] = df_qc_metrics.loc[:, fraction_cols].apply(
+    lambda x: round(x * 100, ndigits=1)
+)
+
+metrics = {
+    "Cells Passed": "total number of cell barcodes passing all library-level QC filters",
+    "% Excluded": "fraction of cell barcodes excluded for failing 1 or more library-level QC filters",
+}
+
+cols = [
+    "Sample",
+    "Cells Passed",
+    "% Excluded",
+]
+
+if all(has_hashing_assignments(files[2]) for files in files["droplet_qc"].values()):
+    cells = {sample: [] for sample in files["libraries_qc"].keys()}
+    for sample, filelist in files["libraries_qc"].items():
+        with gzip.open(filelist[1], mode="rt", encoding="utf-8") as file:
+            for line in file:
+                cells[sample].append(line.rstrip())
+
+    df_assignment = [
+        pd.read_csv(files[2], sep="\t", header=0, index_col=None)[["barcode", "hash_id"]]
+        .set_index("barcode", inplace=False)
+        .astype(str)
+        .rename(columns={"hash_id": "Assignment"})
+        .assign(Sample=sample)
+        for sample, files in files["droplet_qc"].items()
+    ]
+    df_assignment = pd.concat(
+        [
+            df.loc[cells[sample]]
+            for df, sample in zip(df_assignment, files["droplet_qc"].keys())
+        ],
+        axis=0,
+        ignore_index=True,
+    )
+    df_assignment = (
+        pd.crosstab(
+            index=df_assignment["Sample"],
+            columns=df_assignment["Assignment"],
+        )
+        .reset_index()
+        .replace({0: pd.NA})
+        .convert_dtypes()
+    )
+
+    df_qc_metrics = df_qc_metrics.merge(
+        df_assignment,
+        on="Sample",
+    )
+
+    metrics["Assignment"] = "number of cell barcodes passing all library-level QC filters assigned to each hashed sample"
+
+    cols += list(
+        df_assignment.columns[
+            [
+                _ not in set(cols)
+                for _ in df_assignment.columns
+            ]
+        ]
+    )
+
+df_qc_filters = pd.concat(df_qc_filters, axis=0, ignore_index=True)
+df_qc_filters.iloc[:, :-1] = df_qc_filters.iloc[:, :-1].apply(
+    lambda x: ["Pass" if _ else "Fail" for _ in x]
+)
+
+Markdown(
+    "::: {.callout-tip title='Metrics'}\n"
+    + "\n".join(
+        [
+            f"**{k}** {v}  "
+            for k, v in metrics.items()
+        ]
+    )
+    + "\n:::"
+)
+
+table = pn.widgets.Tabulator(
+    df_qc_metrics[cols],
+    header_filters={
+        "Sample": {
+            "type": "input",
+            "func": "like",
+            "placeholder": "Enter Sample",
+        },
+    },
+    formatters={
+        x: {"type": "progress", "max": 100, "legend": True, "color": "#E5ECF6"}
+        for x in cols
+        if re.match(pattern="^\\%", string=str(x))
+    },
+    groups={"Assignment": cols[3:]} if len(cols) > 3 else {},
+    editors={x: None for x in cols},
+    selectable=False,
+    layout="fit_data_table",
+    max_width=780,
+    widths={x: 125 for x in cols[1:]},
+    show_index=False,
+    frozen_columns=["Sample"],
+    theme="bootstrap",
+)
+
+df_qc_metrics[cols].to_csv("summary_data/cell_metrics.tsv", sep="\t", index=False)
+
+cols = ["Sample"] + list(
+    df_qc_filters.columns[df_qc_filters.columns != "Sample"][-1::-1]
+)
+
+fig_filters = go.Figure()
+for index, sample in enumerate(samples):
+    df = (
+        df_qc_filters[cols]
+        .loc[df_qc_filters["Sample"] == sample]
+        .sort_values(by=cols[1:])
+    )
+    dims = [go.parcats.Dimension(values=df[x], label=x) for x in cols[1:]]
+    fig_filters = fig_filters.add_trace(
+        go.Parcats(
+            dimensions=dims,
+            hoveron="dimension",
+            line={
+                "color": pd.factorize(df["All"])[0],
+                "colorscale": [(0, COLOURS["fail"]), (1, COLOURS["pass"])],
+                "shape": "hspline",
+            },
+            arrangement="freeform",
+            visible=not bool(index),
+        )
+    )
+fig_filters = fig_filters.update_layout(
+        width=780,
+        height=300,
+        updatemenus=[
+            go.layout.Updatemenu(
+                active=0,
+                buttons=[
+                    {
+                        "label": sample,
+                        "method": "update",
+                        "args": [
+                            {
+                                "visible": [
+                                    True if index == count else False
+                                    for count in np.arange(len(samples))
+                                ]
+                            }
+                        ],
+                    }
+                    for index, sample in enumerate(samples)
+                ],
+                type="dropdown",
+            )
+        ],
+)
+fig_filters = pn.pane.Plotly(fig_filters)
+
+pn.Tabs(("Summary", table), ("Filters", fig_filters)).servable()
+```
+
+```{python}
+#| include: false
+os.system("zip -FSmr summary_data.zip summary_data")
+```
+
+# Session Info
+
+```{python}
+session_info.show(dependencies=True, std_lib=True)
+```

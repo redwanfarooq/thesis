@@ -1,0 +1,297 @@
+##########################################################################################
+# Configuration file for Snakemake pipeline
+# Author: Redwan Farooq
+# Complete ALL entries in sections marked 'REQUIRED'
+# Comment ('#') any unused entries in sections marked 'OPTIONAL'
+##########################################################################################
+
+
+# --------------------------------------------------
+# Module
+# --------------------------------------------------
+# REQUIRED
+# Pipeline module for library preparation protocol
+# Options:
+#   gex: GEX only protocol
+#     Additional required configuration:
+#       - 'starsolo_reference' (reference files)
+#       - 'gex_barcode_whitelist' (reference files)
+#   atac: ATAC only protocol
+#     Additional required configuration:
+#       - 'chromap_reference' (reference files)
+#       - 'chromap_index' (reference files)
+#       - 'atac_barcode_whitelist' (reference files)
+#   gex_atac: 10X multiome (GEX + ATAC) protocol
+#     Additional required configuration:
+#       - 'starsolo_reference' (reference files)
+#       - 'chromap_reference' (reference files)
+#       - 'chromap_index' (reference files)
+#       - 'gex_barcode_whitelist' (reference files)
+#       - 'atac_barcode_whitelist' (reference files)
+#   cite_seq: CITE-seq protocol
+#     Additional required configuration:
+#       - 'starsolo_reference' (reference files)
+#       - 'gex_barcode_whitelist' (reference files)
+#       - 'tags' (metadata files)
+#   tea_seq: TEA-seq/DOGMA-seq protocol
+#     Additional required configuration:
+#       - 'starsolo_reference' (reference files)
+#       - 'chromap_reference' (reference files)
+#       - 'chromap_index' (reference files)
+#       - 'gex_barcode_whitelist' (reference files)
+#       - 'atac_barcode_whitelist' (reference files)
+#       - 'tags' (metadata files)
+#   gex_fb_cellranger: 10X GEX +/- feature barcoding protocol
+#     Additional required configuration:
+#       - 'cellranger_reference' (reference files)
+#       - 'features' (metadata files) if using feature barcoding
+#   atac_cellranger: 10X ATAC only protocol
+#     Additional required configuration:
+#       - 'cellranger_reference' (reference files)
+#   gex_atac_cellranger: 10X multiome (GEX + ATAC) protocol
+#     Additional required configuration:
+#       - 'cellranger_reference' (reference files)
+#   vdj_cellranger: 10X immune profiling protocol
+#     Additional required configuration:
+#       - 'cellranger_vdj_reference' (reference files)
+#   tea_seq_cellranger: TEA-seq/DOGMA-seq protocol
+#     Additional required configuration:
+#       - 'cellranger_reference' (reference files)
+#       - 'gex_barcode_whitelist' (reference files)
+#       - 'tags' (metadata files)
+#   gex_fb_vdj_cellranger: 10X GEX +/- feature barcoding +/- immune profiling protocol (with optional sample hashing)
+#     Additional required configuration:
+#       - 'cellranger_reference' (reference files)
+#       - 'cellranger_vdj_reference' (reference files) if using immune profiling
+#       - 'features' (metadata files) if using feature barcoding
+#       - 'hashes' (metadata files) if using sample hashing
+module: cite_seq
+
+# --------------------------------------------------
+# Input/output directories
+# --------------------------------------------------
+# REQUIRED
+# Raw sequencing runs directory
+run_dir: /project/fuggerlab/shared/runs
+# Pipeline output directory
+output_dir: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/raw/cite_seq/cohort_02
+
+# OPTIONAL
+# If 'scripts_dir' not specified, defaults to
+# 'resources/scripts'
+# scripts_dir:
+# If 'metadata_dir' not specified, defaults to
+# 'metadata'
+# metadata_dir:
+
+
+# --------------------------------------------------
+# Metadata files
+# *** RELATIVE paths from 'metadata_dir' ***
+# --------------------------------------------------
+# REQUIRED
+# Runs summary table in table in delimited file format (e.g. TSV, CSV)
+# Required fields:
+#   run: run folder name
+#   lib_type: library type (options: GEX, ATAC, ADT, HTO, CRISPR)
+#   sample_id: unique sample ID
+#   sample_index: EITHER index name OR literal i7 index sequence - only required if input type is BCL
+#   lane: EITHER lane number(s) (separated with spaces if more than one lane used) OR * (for all lanes) - only required if input type is BCL
+# Optional fields:
+#   sample_index2: literal i5 index sequence (as per forward strand workflow, additionally set 'reverse_complement' to True if sequencer workflow reads i5 index in reverse complement)
+runs: runs.tsv
+
+# OPTIONAL
+# BarCounter antibody tag list
+tags: barcounter/tags_totalseq_b.csv
+# Cell Ranger feature reference
+# features: cellranger/features.csv
+# Cell Ranger sample hashing reference
+# hashes: cellranger/hashes.csv
+
+
+# --------------------------------------------------
+# Reference files
+# *** ABSOLUTE paths ***
+# --------------------------------------------------
+# REQUIRED
+# Cell Ranger/STARsolo/chromap genome reference package
+# cellranger_reference: /databank/10x-rangers/refdata-gex-GRCh38-2020-A # Cell Ranger
+# cellranger_reference: /databank/10x-rangers/refdata-cellranger-atac-GRCh38-2020-A-2.0.0 # Cell Ranger ATAC
+# cellranger_reference: /databank/10x-rangers/refdata-cellranger-arc-GRCh38-2020-A-2.0.0 # Cell Ranger ARC
+# cellranger_vdj_reference: /databank/10x-rangers/refdata-cellranger-vdj-GRCh38-alts-ensembl-7.1.0 # Cell Ranger VDJ
+starsolo_reference: /project/fuggerlab/rfarooq/ref/genomes/GRCh38/star # STARSolo
+# chromap_reference: /databank/10x-rangers/refdata-cellranger-arc-GRCh38-2020-A-2.0.0/fasta/genome.fa # chromap
+# chromap_index: /project/fuggerlab/rfarooq/ref/genomes/GRCh38/chromap/index # chromap
+
+# OPTIONAL
+# If 'dual_index_kits' and 'single_index_kits' not
+# provided, index name parsing will not be performed
+# and all sample indexes in runs table will be
+# interpreted as literal index sequences
+dual_index_kits:
+  - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Dual_Index_Kit_TT_Set_A.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Dual_Index_Kit_TS_Set_A.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Dual_Index_Kit_TN_Set_A.csv
+  - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Dual_Index_Kit_NT_Set_A.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Dual_Index_Kit_NN_Set_A.csv
+# single_index_kits:
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Single_Index_Kit_T_Set_A.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/10X_Single_Index_Kit_N_Set_A.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/Illumina_Single_Index_Kit_D.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/Illumina_Single_Index_Kit_RPI.csv
+  # - /project/fuggerlab/rfarooq/ref/sample_index_kits/Custom_Single_Index_Kit_DOGMA_HTO_D7xx.csv
+# Cell barcode whitelist
+# gex_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/3M-3pgex-may-2023.txt.gz # 10x 3' v4 (GEX)
+gex_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/3M-february-2018.txt.gz # 10x 3' v3 (GEX)
+# gex_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/3M-5pgex-jan-2023.txt.gz # 10x 5' v3 (GEX)
+# gex_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/737K-arc-v1.txt.gz # 10x multiome v1 (GEX)
+# atac_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/737K-arc-v1_atac.txt.gz # 10x multiome v1 (ATAC)
+# atac_barcode_whitelist: /project/fuggerlab/rfarooq/ref/barcode_whitelists/737K-cratac-v1.txt.gz # 10x ATAC v2 (ATAC)
+
+# --------------------------------------------------
+# Script parameters
+# --------------------------------------------------
+# OPTIONAL
+# If 'reverse_complement' not provided, defaults to
+# False; set to True if sequencer workflow reads i5
+# index in reverse complement e.g.
+#   NovaSeq X
+#   NovaSeq 6000 with v1.0 reagent kits
+#   iSeq 100
+#   MiniSeq with standard reagent kits
+#   NextSeq
+#   HiSeq X/4000/3000
+reverse_complement: true
+
+
+# --------------------------------------------------
+# Command line flags
+# --------------------------------------------------
+# OPTIONAL
+# If not specified, defaults to ''
+bcl2fastq_args: >-
+  --create-fastq-for-index-reads
+  --minimum-trimmed-read-length=8
+  --mask-short-adapter-reads=8
+  --ignore-missing-positions
+  --ignore-missing-filter
+  --ignore-missing-bcls
+# cellranger_args: >-
+#   --nosecondary
+#   --disable-ui
+# cellranger_vdj_args: >-
+#   --chain auto
+starsolo_args: >-
+  --sysShell /bin/bash
+  --readFilesCommand zcat
+  --clipAdapterType CellRanger4
+  --outFilterScoreMin 30
+  --outSAMtype BAM SortedByCoordinate
+  --soloType CB_UMI_Simple
+  --soloCellFilter None
+  --soloFeatures GeneFull_Ex50pAS
+  --soloStrand Forward
+  --soloCBstart 1
+  --soloCBlen 16
+  --soloUMIstart 17
+  --soloUMIlen 12
+  --soloCBmatchWLtype 1MM_multi_Nbase_pseudocounts
+  --soloUMIfiltering MultiGeneUMI_CR
+  --soloUMIdedup 1MM_CR  
+# chromap_args: >- # remove --barcode-translate flag if not 10X multiome (GEX + ATAC) protocol
+#   --preset atac
+#   --read-format bc:0:-1:-
+#   --barcode-translate /project/fuggerlab/rfarooq/ref/barcode_whitelists/737K-arc-v1_translation.tsv
+# macs2_args: >-
+#   -f BED
+#   -g hs
+#   --nomodel
+#   --nolambda
+#   --extsize 200
+#   --shift -100
+#   --max-gap 0
+#   --keep-dup all
+#   --call-summits
+fastqc_args: --noextract
+multiqc_args: -zfd --dirs-depth=1 --interactive
+
+
+# --------------------------------------------------
+# Miscellaneous parameters
+# --------------------------------------------------
+# OPTIONAL
+# If 'bases_mask' not provided, defaults to read
+# type/length specified in RunInfo.xml file in
+# Illumina run folder
+bases_mask:
+  GEX: Y28n*,I10n*,I10n*,Y90n*
+  # ATAC: Y50n*,I8n*,Y16n*,Y49n*
+  ADT: Y28n*,I10n*,I10n*,n10Y15n*
+  # HTO: Y28n*,I8n*,n*,Y15n*
+  # CRISPR: Y28n*,I10n*,I10n*,Y90n*
+# If 'read_trim' not provided, no trimming will be performed
+# and symbolic links to the original FASTQ files will be created
+# in the output directory
+# If 'read_trim' is provided but trimming options for the library
+# type are missing, defaults to trimming to 150 bases from the
+# 5' end of each read
+# 'b' removes the specified number of bases from the 5' end
+# 'e' removes the specified number of bases from the 3' end
+# 'L' trims to the specified number of bases from the 5' end
+# All options are CASE-SENSITIVE
+read_trim:
+  GEX:
+    R1:
+      L: 28
+    R2:
+      L: 90
+#   ATAC:
+#     R1:
+#       L: 50
+#     R2:
+#       b: 8 # enable for read 2 length 24 bases (i.e. no dark cycles)
+#       L: 16
+#     R3:
+#       L: 50
+#   ADT:
+#     R1:
+#       L: 28
+#     R2:
+#       b: 10 # enable for TotalSeq-B/TotalSeq-C antibodies with BarCounter
+#       L: 25 # change to 15 for TotalSeq-A antibodies or for TotalSeq-B/TotalSeq-C antibodies with BarCounter
+#   HTO:
+#     R1:
+#       L: 28
+#     R2:
+#       b: 10 # enable for TotalSeq-B/TotalSeq-C antibodies with BarCounter
+#       L: 25 # change to 15 for TotalSeq-A antibodies or for TotalSeq-B/TotalSeq-C antibodies with BarCounter
+#   CRISPR:
+#     R1:
+#       L: 28
+#     R2:
+#       L: 90
+#   BCR:
+#     R1:
+#       L: 150
+#     R2:
+#       L: 150
+#   TCR:
+#     R1:
+#       L: 150
+#     R2:
+#       L: 150
+# If 'barcode_translate' not provided, barcodes
+# for ADT/HTO libraries in count matrices generated using
+# BarCounter will not be translated to match corresponding
+# barcodes in GEX libraries
+# Only required for 10x 3' protocols using TotalSeq-B
+# antibodies
+# barcode_translate: /project/fuggerlab/rfarooq/ref/barcode_whitelists/3M-3pgex-may-2023_translation.tsv # 10x 3' v4
+barcode_translate: /project/fuggerlab/rfarooq/ref/barcode_whitelists/3M-february-2018_translation.tsv # 10x 3' v3
+# If 'cellranger_multi_options' not provided, defaults to
+# default Cell Ranger Multi options
+# Keys and values should be valid Cell Ranger Multi options
+# see https://www.10xgenomics.com/support/software/cell-ranger/latest/advanced/cr-multi-config-csv-opts
+# cellranger_multi_options:
+#   no-secondary: true

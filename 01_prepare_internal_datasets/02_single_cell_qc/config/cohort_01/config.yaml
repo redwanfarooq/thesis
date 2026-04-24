@@ -1,0 +1,167 @@
+##########################################################################################
+# Configuration file for Snakemake pipeline
+# Author: Redwan Farooq
+# Complete ALL entries in sections marked 'REQUIRED'
+# Comment ('#') any unused entries in sections marked 'OPTIONAL'
+##########################################################################################
+
+
+# --------------------------------------------------
+# Module
+# --------------------------------------------------
+# REQUIRED
+# Pipeline module for QC workflow
+# Options:
+#   default: Default pipeline (EmptyDrops/k-means/combined cell calling, scDblFinder/COMPOSITE/combined multiplet calling, DecontX/DecontPro ambient removal)
+#   cellbender (alternative using CellBender ambient removal +/- cell calling)
+module: cellbender
+
+
+# --------------------------------------------------
+# Input/output
+# --------------------------------------------------
+# REQUIRED
+# Output directories
+output_dir:
+  data: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/processed/cite_seq/cohort_01/qc
+  reports: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/results/reports/cite_seq/cohort_01/qc
+
+# OPTIONAL
+# File paths for count matrices (use {sample} as placeholder for sample name)
+gex_matrix: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/raw/cite_seq/cohort_01/starsolo/{sample}/Solo.out/GeneFull_Ex50pAS/raw/matrix.mtx.gz
+hto_matrix: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/raw/cite_seq/cohort_01/barcounter/{sample}/{sample}_Tag_Counts.csv
+# atac_matrix: /path/to/file.ext
+adt_matrix: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/raw/cite_seq/cohort_01/barcounter/{sample}/{sample}_Tag_Counts.csv
+# File path to delimited file (e.g. TSV, CSV) containing pre-computed results of cell hashing demultiplexing per cell-containing barcode
+# Output of Cell Ranger 'multi' pipeline (assignment_confidence_table.csv) is automatically recognized
+# If using a different demultiplexing tool, MUST contain the following columns:
+#   Barcode: droplet barcode
+#   Type: either 'singlet', 'multiplet', 'negative' or 'uncertain'
+#   Classification: assigned hashtag ID (if 'singlet') or 'multiplet', 'negative' or 'uncertain'
+# hashing_assignments: /path/to/file.ext
+# File path to TSV file containing total sequencing read counts per library type/sample
+# MUST contain column 'sample' and 1 column per library type
+read_counts: /project/fuggerlab/rfarooq/project/ocrelizumab_multiome/data/raw/cite_seq/cohort_01/qc/count_reads/read_counts.tsv
+# If 'scripts_dir' not specified, defaults to
+# 'resources/scripts'
+# scripts_dir:
+# If 'metadata_dir' not specified, defaults to
+# 'metadata'
+# metadata_dir:
+
+
+# --------------------------------------------------
+# Metadata files
+# *** RELATIVE paths from 'metadata_dir' ***
+# --------------------------------------------------
+# REQUIRED
+# Sample metadata table in delimited file format (e.g. TSV, CSV)
+# Required fields:
+#   sample_id: unique sample ID
+#   hto: hashtag antibody ID (or 'None' if not used)
+#   cells_loaded: number of cells loaded
+#   hash_id: hash ID (or 'None' if not used)
+samples: samples.tsv
+
+
+# --------------------------------------------------
+# Script parameters
+# --------------------------------------------------
+# OPTIONAL
+# Global parameters
+adt_prefix: ADT_ # default: ADT_; prefix for ADT features
+adt_isotype: Isotype # default: null; regex pattern for isotype control antibody IDs
+hto_prefix: HTO_ # default: HTO_; prefix for HTO features (use 'CMO' if using 10x cell multiplexing kit with CellRanger built-in reference)
+pre_filtered: false # default: false; set to true if input matrices are pre-filtered (i.e. only cell-containing barcodes) or if using CellBender for cell calling
+pre_demultiplexed: false # default: false; set to true if using pre-computed cell hashing demultiplexing results (e.g. Cell Ranger 'multi' pipeline output) - MUST provide path to results using 'hashing_assignments'
+# droplet_qc.Rmd
+cell_calling_algorithm: emptydrops # default: emptydrops; options: emptydrops, kmeans, combined
+cell_calling_modalities: # default: gex, atac, adt; options: gex, atac, adt
+  - gex
+  # - atac
+  # - adt
+ordmag_quantile: 0.99 # default: 0.99
+ordmag_ratio: 10 # default: 10
+emptydrops_umi_min: 500 # default: 500
+emptydrops_umi_min_frac_median: 0.01 # default: 0.01
+emptydrops_cand_max_n: 20000 # default: 20000
+emptydrops_ind_min: 45000 # default: 45000
+emptydrops_ind_max: 90000 # default: 90000
+emptydrops_niters: 10000 # default: 10000
+emptydrops_max_attempts: 3 # default: 3
+demuxmix_model: auto # default: auto; options: auto, naive
+demuxmix_pAcpt: 0.9 # default: 0.9
+multiplet_calling_algorithm: scdblfinder # default: null; options: scdblfinder, composite, combined
+scdblfinder_clusters: true # default: true
+scdblfinder_dbr_sd: null # default: null
+scdblfinder_nfeatures: 1500 # default: 1500
+scdblfinder_npcs: 20 # default: 20
+scdblfinder_max_depth: 5 # default: 5
+# libraries_qc.Rmd
+# Each filter can be specified as 'false', 'true' or a numeric threshold
+# If set to 'false', the filter will be skipped
+# If set to 'true', the filter will be applied using automated outlier-based thresholds
+# If set to a numeric threshold, the filter will be applied using the specified threshold
+gex_filters:
+  library_size: true # default: true
+  library_complexity: true # default: true
+  mitochondrial_fraction: true # default: true
+atac_filters:
+  fragment_count: true # default: true
+  tss_enrichment: true # default: true
+  nucleosome_signal: true # default: true
+  peak_fraction: true # default: true
+  blacklist_fraction: true # default: true
+adt_filters:
+  zero_ambient: false # default: true; set to false if using CellBender
+  high_ambient: false # default: true; set to false if using CellBender
+  high_controls: true # default: true
+# ambient_removal.Rmd
+gex_ambient_removal:
+  skip: true # default: false
+  integrate_samples: true # default: false
+  cluster_ndims: 10 # default: 10
+  cluster_k: 20 # default: 20
+  cluster_res: 0.05 # default: 0.05
+  cluster_markers: # default: null; list of cluster marker gene symbols for diagnostic plots
+    - CD3E
+    - MS4A1
+    - LYZ
+    - FCGR3A
+    - GNLY
+    - PPBP
+adt_ambient_removal:
+  skip: true # default: false
+  integrate_samples: false # default: false
+  cluster_ndims: 10 # default: 10
+  cluster_k: 20 # default: 20
+  cluster_res: 0.2 # default: 0.2
+  cluster_markers: # default: null; list of cluster marker ADT IDs (without prefix) for diagnostic plots
+    - CD3
+    - CD4
+    - CD8
+    - CD19
+    - CD14
+    - CD16
+# summary_report.qmd
+target_depth:
+  GEX: 20000 # default: 20000
+  ATAC: 25000 # default: 25000
+  ADT: 10000 # default: 5000
+  HTO: 2000 # default: 2000
+  CRISPR: 5000 # default: 5000
+  BCR: 5000 # default: 5000
+  TCR: 5000 # default: 5000
+
+
+# --------------------------------------------------
+# Command line flags
+# --------------------------------------------------
+# OPTIONAL
+# If not specified, defaults to ''
+cellbender_args: >-
+  --cuda
+  --fpr 0
+  --exclude-feature-types Peaks
+  --total-droplets-included 30000
+  --learning-rate 0.00005

@@ -1,0 +1,641 @@
+---
+title: Libraries QC report
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    df_print: paged
+    self_contained: true
+params:
+  rmd: libraries_qc.Rmd
+  sample_id: null
+  droplet_qc: null
+  outdir: null
+  features_matrix: null
+  fragments: null
+  adt_isotype: null
+  gex_filters: !r list("library_size" = TRUE, "library_complexity" = TRUE, "mitochondrial_fraction" = TRUE)
+  atac_filters: !r list("fragment_count" = TRUE, "tss_enrichment" = TRUE, "nucleosome_signal" = TRUE, "peak_fraction" = TRUE, "blacklist_fraction" = TRUE)
+  adt_filters: !r list("zero_ambient" = TRUE, "high_ambient" = TRUE, "high_controls" = TRUE)
+---
+
+```{r setup, include=FALSE}
+# Set chunk options
+knitr::opts_chunk$set(
+  echo = FALSE,
+  error = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "",
+  results = "asis"
+)
+
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(Matrix)
+library(DropletUtils)
+library(scuttle)
+library(scater)
+library(scran)
+library(Seurat)
+library(Signac)
+
+# Check if running within Snakemake pipeline
+if (exists("snakemake")) {
+  # if running within Snakemake pipeline
+  log <- file(snakemake@log[[1]], open = "w")
+  sink(log, type = "message") # write stderr to Snakemake log file
+
+  snakemake@source("utils.R")
+
+  unlockBinding("params", .GlobalEnv)
+  params$sample_id <- snakemake@wildcards$sample
+  params <- update.params(snakemake@params)
+  lockBinding("params", .GlobalEnv)
+
+  if (!dir.exists(dirname(snakemake@output[[1]]))) dir.create(dirname(snakemake@output[[1]]), recursive = TRUE)
+} else {
+  # if running in isolation
+  source("utils.R")
+}
+
+# Replace path placeholders
+unlockBinding("params", .GlobalEnv)
+for (x in c("droplet_qc", "outdir", "features_matrix", "fragments")) {
+  params[[x]] <- glue::glue(params[[x]], sample = params$sample_id)
+  if (length(params[[x]]) == 0) params[[x]] <- NULL # override default value of glue::glue() for null input (character(0)) and return null output
+}
+lockBinding("params", .GlobalEnv)
+
+# Check for missing required params
+required <- c(
+  "sample_id",
+  "droplet_qc",
+  "outdir",
+  "features_matrix"
+)
+is.missing <- sapply(params[required], is.null)
+if (any(is.missing)) {
+  names <- paste(names(params[required])[is.missing], collapse = ", ")
+  stop(sprintf("The following required parameters are missing: %s", names))
+}
+
+# Initialise results list
+bc <- list()
+
+# Initialise list index
+list.index <- 1
+
+# Get feature modalities
+modalities <- names(get.10x.h5(params$features_matrix))
+```
+
+### Sample: `r params$sample_id`
+
+# Overview
+
+```{r overview}
+cat(prepend.index("Load count matrices and subset to common barcodes that passed droplet processing QC"), "\n")
+if ("Gene Expression" %in% modalities) {
+  cat(prepend.index("Calculate GEX QC metrics and discard outliers on 1 or more metrics"), "\n")
+}
+if ("Peaks" %in% modalities) {
+  cat(prepend.index("Calculate ATAC QC metrics and discard outliers on 1 or more metrics"), "\n")
+}
+if ("Antibody Capture" %in% modalities) {
+  cat(prepend.index("Calculate ADT QC metrics and discard outliers on 1 or more metrics"), "\n")
+}
+cat(prepend.index("Output text file containing list of barcodes passing all QC filters"), "\n")
+```
+
+# Data loading
+
+```{r load-droplet-qc-results}
+cat("* **Droplet processing QC results:**", params$droplet_qc, "\n")
+droplet.qc.res <- vroom::vroom(
+  file.path(params$droplet_qc, "metadata.tsv.gz"),
+  delim = "\t",
+  col_names = TRUE,
+  show_col_types = FALSE
+) %>%
+  mutate(sample_id = if (!is.null(.$hash_id)) factor(hash_id, levels = sort(unique(hash_id)), ordered = TRUE) else factor(sample_id, levels = sort(unique(sample_id)), ordered = TRUE)) %>%
+  as.data.frame()
+rownames(droplet.qc.res) <- droplet.qc.res$barcode
+bc$cells <- rownames(droplet.qc.res)
+```
+
+```{r load-features-matrix, eval=!is.null(params$features_matrix)}
+cat("* **Features matrix:**", params$features_matrix, "\n")
+features.mat <- get.10x.h5(params$features_matrix)
+if (is.null(names(features.mat))) stop("Unable to determine feature type(s) from features matrix")
+bc$features <- colnames(features.mat[[1]])
+# translate 10x feature types
+modalities <- names(features.mat) %>%
+  case_match(
+    "Gene Expression" ~ "gex",
+    "Peaks" ~ "atac",
+    "Antibody Capture" ~ "adt",
+    .default = NA
+  )
+names(features.mat) <- modalities
+# drop unrecognized feature types
+modalities <- modalities[!is.na(modalities)]
+if (!length(modalities)) stop("No valid feature types found in features matrix")
+```
+
+```{r subset-barcodes}
+bc.common <- Reduce(intersect, bc)
+summary.stats <- data.frame(row.names = bc.common)
+droplet.qc.res <- droplet.qc.res[bc.common, ]
+features.mat <- lapply(features.mat, function(x) x[, bc.common])
+
+# Re-initialise results list
+bc <- list()
+```
+
+# Data processing
+
+```{r gex-qc-metrics, eval=!is.null(features.mat[["gex"]])}
+cat("## GEX QC metrics {.tabset}", "\n\n")
+sce <- SingleCellExperiment(assays = list(counts = features.mat[["gex"]])) %>%
+  add.cell.metadata(droplet.qc.res)
+# Auto detect if gene names are Ensembl IDs and convert to gene symbols if needed
+gene.names <- rownames(sce)
+if ((sum(grepl(pattern = "^ENS[A-Z]*[0-9]+", x = gene.names)) / length(gene.names)) > 0.5) {
+  is.mito <- grep(pattern = "^MT-", ensembldb::mapIds(EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86, keys = gene.names, keytype = "GENEID", column = "SYMBOL")) %>%
+    suppressWarnings() 
+} else {
+  is.mito <- grep(pattern = "^MT-", gene.names)
+} # pattern matching for mitochondrial genes
+sce <- addPerCellQC(sce, subsets = list(mito = is.mito))
+qc <- data.frame(row.names = colnames(sce))
+if (as.logical(params$gex_filters$library_size)) qc$low_lib_size <- if (is.logical(params$gex_filters$library_size)) isOutlier(sce$sum, type = "lower", log = TRUE) else sce$sum < params$gex_filters$library_size
+if (as.logical(params$gex_filters$library_complexity)) qc$low_lib_complexity <- if (is.logical(params$gex_filters$library_complexity)) isOutlier(sce$detected, type = "lower", log = TRUE) else sce$detected < params$gex_filters$library_complexity
+if (as.logical(params$gex_filters$mitochondrial_fraction)) qc$high_mito_percent <- if (is.logical(params$gex_filters$mitochondrial_fraction)) isOutlier(sce$subsets_mito_percent, type = "higher", log = FALSE) else sce$subsets_mito_percent > params$gex_filters$mitochondrial_fraction * 100
+qc$discard <- combine.filters(qc)
+sce <- add.cell.metadata(sce, qc)
+bc$gex <- colnames(sce[, !sce$discard])
+summary.stats$GEX <- !qc$discard
+```
+
+```{r gex-qc-library-size, eval=all(!is.null(features.mat[["gex"]]), as.logical(params$gex_filters$library_size))}
+cat("### Library size", "\n\n")
+ggplotly(
+  violin.plot(
+    colData(sce),
+    x = sample_id,
+    y = sum,
+    colour = low_lib_size,
+    size = 0.1,
+    title = "Low library size",
+    x.lab = "Sample",
+    y.lab = "Total UMI count",
+    colour.lab = "Excluded",
+    log = TRUE
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r gex-qc-library-complexity, eval=all(!is.null(features.mat[["gex"]]), as.logical(params$gex_filters$library_complexity))}
+cat("### Library complexity", "\n\n")
+ggplotly(
+  violin.plot(
+    colData(sce),
+    x = sample_id,
+    y = detected,
+    colour = low_lib_complexity,
+    size = 0.1,
+    title = "Low library complexity",
+    x.lab = "Sample",
+    y.lab = "Total genes detected",
+    colour.lab = "Excluded",
+    log = TRUE
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r gex-qc-mitochondrial-fraction, eval=all(!is.null(features.mat[["gex"]]), as.logical(params$gex_filters$mitochondrial_fraction))}
+cat("### Mitochondrial fraction", "\n\n")
+ggplotly(
+  violin.plot(
+    colData(sce),
+    x = sample_id,
+    y = subsets_mito_percent,
+    colour = high_mito_percent,
+    size = 0.1,
+    title = "High mitochondrial fraction",
+    x.lab = "Sample",
+    y.lab = "Percentage mitochondrial genes",
+    colour.lab = "Excluded"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r gex-qc-diagnostics, eval=!is.null(features.mat[["gex"]])}
+cat("### Diagnostics {.tabset .tabset-pills}", "\n\n")
+cat("* **Cells passed:**", length(bc$gex) %>% format(big.mark = ","), "\n")
+cat("* **Cells excluded:**", sum(sce$discard, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+if (as.logical(params$gex_filters$library_size)) {
+  cat("  + **Low library size:**", sum(sce$low_lib_size, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$gex_filters$library_complexity)) {
+  cat("  + **Low library complexity:**", sum(sce$low_lib_complexity, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$gex_filters$mitochondrial_fraction)) {
+  cat("  + **High mitochondrial fraction:**", sum(sce$high_mito_percent, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+cat("\n\n")
+cat("#### Library size vs mitochondrial fraction", "\n\n")
+ggplotly(
+  scatter.plot(
+    colData(sce) |>
+      as.data.frame() |>
+      arrange(discard),
+    x = sum,
+    y = subsets_mito_percent,
+    size = 0.1,
+    colour = discard,
+    title = "Aggregated QC metrics",
+    x.lab = "Total UMI count",
+    y.lab = "Percentage mitochondrial genes",
+    colour.lab = "Excluded",
+    log = "x"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480
+) %>%
+  htmltools::tagList() %>%
+  print()
+cat("\n\n")
+cat("#### Library size vs library complexity", "\n\n")
+ggplotly(
+  scatter.plot(
+    colData(sce) |>
+      as.data.frame() |>
+      arrange(discard),
+    x = sum,
+    y = detected,
+    size = 0.1,
+    colour = discard,
+    title = "Aggregated QC metrics",
+    x.lab = "Total UMI count",
+    y.lab = "Total genes detected",
+    colour.lab = "Excluded",
+    log = TRUE
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480
+) %>%
+  htmltools::tagList() %>%
+  print()
+```
+
+```{r atac-qc-metrics, eval=!is.null(features.mat[["atac"]])}
+cat("## ATAC QC metrics {.tabset}", "\n\n")
+fragments <- CreateFragmentObject(params$fragments, cells = bc.common)
+annotation <- GetGRangesFromEnsDb(EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86) %>% suppressWarnings()
+seqlevelsStyle(annotation) <- "UCSC"
+seu <- CreateSeuratObject(
+  counts = CreateChromatinAssay(
+    counts = features.mat[["atac"]],
+    sep = c(":", "-"),
+    fragments = fragments,
+    annotation = annotation
+  ),
+  assay = "ATAC"
+) %>%
+  add.cell.metadata(droplet.qc.res)
+fragment.metrics <- CountFragments(fragments@path) %>% tibble::column_to_rownames("CB")
+seu$fragment_count <- fragment.metrics[colnames(seu), "frequency_count"]
+seu$nucleosome_signal <- fragment.metrics[colnames(seu), "mononucleosomal"] / fragment.metrics[colnames(seu), "nucleosome_free"]
+seu <- TSSEnrichment(seu, fast = FALSE)
+seu <- FRiP(seu, assay = "ATAC", total.fragments = "fragment_count")
+if (any(seu$FRiP > 1)) seu$FRiP <- seu$FRiP / 2 # if any FRiP > 1, assume peak counts represent transposition events rather than fragments and divide by 2 to adjust
+seu$blacklist_fraction <- FractionCountsInRegion(seu, regions = blacklist_hg38_unified)
+qc <- data.frame(row.names = colnames(seu))
+if (as.logical(params$atac_filters$fragment_count)) qc$low_fragment_count <- if (is.logical(params$atac_filters$fragment_count)) isOutlier(seu$fragment_count, type = "lower", log = TRUE) else seu$fragment_count < params$atac_filters$fragment_count
+if (as.logical(params$atac_filters$tss_enrichment)) qc$low_tss_enrichment <- if (is.logical(params$atac_filters$tss_enrichment)) isOutlier(seu$TSS.enrichment, type = "lower", log = FALSE) else seu$TSS.enrichment < params$atac_filters$tss_enrichment
+if (as.logical(params$atac_filters$nucleosome_signal)) qc$high_nucleosome_signal <- if (is.logical(params$atac_filters$nucleosome_signal)) isOutlier(seu$nucleosome_signal, type = "higher", log = FALSE, nmads = 8) else seu$nucleosome_signal > params$atac_filters$nucleosome_signal
+if (as.logical(params$atac_filters$peak_fraction)) qc$low_peak_fraction <- if (is.logical(params$atac_filters$peak_fraction)) isOutlier(seu$FRiP, type = "lower", log = FALSE, nmads = 8) else seu$FRiP < params$atac_filters$peak_fraction
+if (as.logical(params$atac_filters$blacklist_fraction)) qc$high_blacklist_fraction <- if (is.logical(params$atac_filters$blacklist_fraction)) isOutlier(seu$blacklist_fraction, type = "higher", log = FALSE, nmads = 8) else seu$blacklist_fraction > params$atac_filters$blacklist_fraction
+qc$discard <- combine.filters(qc)
+seu <- add.cell.metadata(seu, qc)
+bc$atac <- colnames(seu[, !seu$discard])
+summary.stats$ATAC <- !qc$discard
+```
+
+```{r atac-qc-fragment-count, eval=all(!is.null(features.mat[["atac"]]), as.logical(params$atac_filters$fragment_count))}
+cat("### Fragment count", "\n\n")
+ggplotly(
+  violin.plot(
+    seu[[]],
+    x = sample_id,
+    y = fragment_count,
+    colour = low_fragment_count,
+    size = 0.1,
+    title = "Low total unique fragments",
+    x.lab = "Sample",
+    y.lab = "Total unique fragments",
+    colour.lab = "Excluded",
+    log = TRUE
+  ) +
+    ggplot2::scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r atac-qc-tss-enrichment, eval=all(!is.null(features.mat[["atac"]]), as.logical(params$atac_filters$tss_enrichment))}
+cat("### TSS enrichment", "\n\n")
+ggplotly(
+  violin.plot(
+    seu[[]],
+    x = sample_id,
+    y = TSS.enrichment,
+    colour = low_tss_enrichment,
+    size = 0.1,
+    title = "Low TSS enrichment",
+    x.lab = "Sample",
+    y.lab = "TSS enrichment",
+    colour.lab = "Excluded"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r atac-qc-nucleosome-signal, eval=all(!is.null(features.mat[["atac"]]), as.logical(params$atac_filters$nucleosome_signal))}
+cat("### Nucleosome signal", "\n\n")
+ggplotly(
+  violin.plot(
+    seu[[]],
+    x = sample_id,
+    y = nucleosome_signal,
+    colour = high_nucleosome_signal,
+    size = 0.1,
+    title = "High nucleosome signal",
+    x.lab = "Sample",
+    y.lab = "Nucleosome signal",
+    colour.lab = "Excluded"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r atac-qc-peak-fraction, eval=all(!is.null(features.mat[["atac"]]), as.logical(params$atac_filters$peak_fraction))}
+cat("### Peak fraction", "\n\n")
+ggplotly(
+  violin.plot(
+    seu[[]],
+    x = sample_id,
+    y = FRiP * 100,
+    colour = low_peak_fraction,
+    size = 0.1,
+    title = "Low fraction reads in peaks",
+    x.lab = "Sample",
+    y.lab = "Percentage reads in peaks",
+    colour.lab = "Excluded"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r atac-qc-blacklist-fraction, eval=all(!is.null(features.mat[["atac"]]), as.logical(params$atac_filters$blacklist_fraction))}
+cat("### Blacklist fraction", "\n\n")
+ggplotly(
+  violin.plot(
+    seu[[]],
+    x = sample_id,
+    y = blacklist_fraction * 100,
+    colour = high_blacklist_fraction,
+    size = 0.1,
+    title = "High blacklist fraction",
+    x.lab = "Sample",
+    y.lab = "Percentage reads in genomic blacklist regions",
+    colour.lab = "Excluded"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480,
+  tooltip = c("y", "colour")
+)
+```
+
+```{r atac-qc-diagnostics, fig.width=7, fig.height=5, eval=!is.null(features.mat[["atac"]])}
+cat("### Diagnostics {.tabset .tabset-pills}", "\n\n")
+cat("* **Cells passed:**", length(bc$atac) %>% format(big.mark = ","), "\n")
+cat("* **Cells excluded:**", sum(seu$discard, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+if (as.logical(params$atac_filters$fragment_count)) {
+  cat("  + **Low total unique fragments:**", sum(seu$low_fragment_count, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$atac_filters$tss_enrichment)) {
+  cat("  + **Low TSS enrichment:**", sum(seu$low_tss_enrichment, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$atac_filters$nucleosome_signal)) {
+  cat("  + **High nucleosome signal:**", sum(seu$high_nucleosome_signal, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$atac_filters$peak_fraction)) {
+  cat("  + **Low fraction reads in peaks:**", sum(seu$low_peak_fraction, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (as.logical(params$atac_filters$blacklist_fraction)) {
+  cat("  + **High blacklist region reads:**", sum(seu$high_blacklist_fraction, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+cat("\n\n")
+cat("#### Library size vs TSS enrichment", "\n\n")
+ggplotly(
+  scatter.plot(
+    seu[[]] |>
+      arrange(discard),
+    x = fragment_count,
+    y = TSS.enrichment,
+    size = 0.1,
+    colour = discard,
+    title = "Aggregated QC metrics",
+    x.lab = "Total unique fragments",
+    y.lab = "TSS enrichment",
+    colour.lab = "Excluded",
+    log = "x"
+  ) +
+    scale_colour_manual(values = c("grey80", "#d82526")),
+  width = 672,
+  height = 480
+) %>%
+  htmltools::tagList() %>%
+  print()
+cat("\n\n")
+cat("#### TSS enrichment", "\n\n")
+ggplotly(
+  tss.plot(
+    seu,
+    assay = "ATAC",
+    cells = WhichCells(seu, expression = discard, invert = TRUE),
+    colour = "#595959"
+  ),
+  width = 672,
+  height = 480
+) %>%
+  htmltools::tagList() %>%
+  print()
+cat("\n\n")
+cat("#### Fragment length", "\n\n")
+ggplotly(
+  fragments.plot(
+    fragments = fragments,
+    cells = WhichCells(seu, expression = discard, invert = TRUE),
+    colour = "#595959",
+    binwidth = 1
+  ),
+  width = 672,
+  height = 480
+) %>%
+  htmltools::tagList() %>%
+  print()
+```
+
+```{r adt-qc-metrics, eval=!is.null(features.mat[["adt"]])}
+cat("## ADT QC metrics {.tabset}", "\n\n")
+sce <- SingleCellExperiment(assays = list(counts = features.mat[["adt"]])) %>%
+  add.cell.metadata(droplet.qc.res)
+filters <- NULL
+if (is.null(params$adt_isotype)) {
+  qc <- cleanTagCounts(sce)
+  qc$high.ambient <- if (is.logical(params$adt_filters$high_ambient)) isOutlier(qc$ambient.scale, type = "higher", log = TRUE) else qc$ambient.scale > params$adt_filters$high_ambient
+  if (as.logical(params$adt_filters$high_ambient)) filters <- "high.ambient"
+} else {
+  is.control <- grep(pattern = params$adt_isotype, rownames(sce))
+  qc <- cleanTagCounts(sce, controls = is.control)
+  qc$high.controls <- if (is.logical(params$adt_filters$high_controls)) isOutlier(qc$sum.controls, type = "higher", log = TRUE) else qc$sum.controls > params$adt_filters$high_controls
+  if (as.logical(params$adt_filters$high_controls)) filters <- "high.controls"
+}
+if (as.logical(params$adt_filters$zero_ambient)) filters <- c(filters, "zero.ambient")
+qc$discard <- if (!is.null(filters)) combine.filters(lapply(filters, function(x) qc[[x]])) else FALSE
+sce <- add.cell.metadata(sce, qc)
+bc$adt <- colnames(sce[, !sce$discard])
+summary.stats$ADT <- !qc$discard
+```
+
+```{r adt-ambient-contamination-isotype-control, eval=!is.null(features.mat[["adt"]])}
+if (is.null(params$adt_isotype)) {
+  cat("### Ambient contamination", "\n\n")
+  ggplotly(
+    violin.plot(
+      colData(sce),
+      x = sample_id,
+      y = ambient.scale,
+      colour = high.ambient,
+      size = 0.1,
+      title = "High ambient contamination",
+      x.lab = "Sample",
+      y.lab = "Relative ambient contamination",
+      colour.lab = "Excluded"
+    ) +
+      scale_colour_manual(values = c("grey80", "#d82526")),
+    width = 672,
+    height = 480,
+    tooltip = c("y", "colour")
+  )
+} else {
+  cat("### Isotype control", "\n\n")
+  ggplotly(
+    violin.plot(
+      colData(sce),
+      x = sample_id,
+      y = sum.controls,
+      colour = high.controls,
+      size = 0.1,
+      title = "High non-specific binding",
+      x.lab = "Sample",
+      y.lab = "Total isotype control antibody count",
+      colour.lab = "Excluded"
+    ) +
+      scale_colour_manual(values = c("grey80", "#d82526")),
+    width = 672,
+    height = 480,
+    tooltip = c("y", "colour")
+  )
+}
+```
+
+```{r adt-qc-diagnostics, eval=!is.null(features.mat[["adt"]])}
+cat("### Diagnostics", "\n\n")
+cat("* **Cells passed:**", length(bc$adt) %>% format(big.mark = ","), "\n")
+cat("* **Cells excluded:**", sum(sce$discard, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+if (as.logical(params$adt_filters$zero_ambient)) {
+  cat("  + **Zero ambient contamination:**", sum(sce$zero.ambient, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (is.null(params$adt_isotype) && as.logical(params$adt_filters$high_ambient)) {
+  cat("  + **High ambient contamination:**", sum(sce$high.ambient, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+if (!is.null(params$adt_isotype) && as.logical(params$adt_filters$high_controls)) {
+  cat("  + **High non-specific binding:**", sum(sce$high.controls, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+}
+```
+
+# Summary
+
+```{r output}
+bc.pass <- Reduce(intersect, bc, init = rownames(droplet.qc.res))
+summary.stats <- summary.stats %>%
+  mutate(All = if_all(everything())) %>%
+  tibble::rownames_to_column("Barcode")
+
+if (!dir.exists(params$outdir)) dir.create(params$outdir, recursive = TRUE)
+vroom::vroom_write_lines(
+  bc.pass,
+  file = file.path(params$outdir, "cell_barcodes.txt.gz")
+)
+vroom::vroom_write(
+  summary.stats,
+  file = file.path(params$outdir, "qc_filters.tsv.gz"),
+  delim = "\t"
+)
+
+cat("* **Total cells passed:**", length(bc.pass) %>% format(big.mark = ","), "\n")
+cat("* **Total cells excluded:**", (nrow(droplet.qc.res) - length(bc.pass)) %>% format(big.mark = ","), "\n")
+if (!is.null(features.mat[["gex"]])) {
+  cat("  + **Failed GEX QC:**", (nrow(droplet.qc.res) - length(bc$gex)) %>% format(big.mark = ","), "\n")
+}
+if (!is.null(features.mat[["atac"]])) {
+  cat("  + **Failed ATAC QC:**", (nrow(droplet.qc.res) - length(bc$atac)) %>% format(big.mark = ","), "\n")
+}
+if (!is.null(features.mat[["adt"]])) {
+  cat("  + **Failed ADT QC:**", (nrow(droplet.qc.res) - length(bc$adt)) %>% format(big.mark = ","), "\n")
+}
+```
+
+# Session Info
+
+```{r session-info, results="markup"}
+sessionInfo()
+```
+
+# Source
+This report was automatically generated from an R Markdown script (<a download="libraries_qc.Rmd" href="`r base64enc::dataURI(file = params$rmd, mime = 'text/rmd', encoding = 'base64')`">download source</a>).

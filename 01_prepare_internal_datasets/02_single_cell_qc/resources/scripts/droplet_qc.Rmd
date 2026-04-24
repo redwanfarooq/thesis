@@ -1,0 +1,741 @@
+---
+title: Droplet processing QC report
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    df_print: paged
+    self_contained: true
+params:
+  rmd: droplet_qc.Rmd
+  sample_id: null
+  metadata: null
+  outdir: null
+  features_matrix: null
+  hto_matrix: null
+  hashing_assignments: null
+  hto_prefix: HTO_
+  fragments: null
+  pre_filtered: false
+  pre_demultiplexed: false
+  cell_calling_algorithm: emptydrops
+  cell_calling_modalities:
+    - gex
+    - atac
+    - adt
+  ordmag_quantile: 0.99
+  ordmag_ratio: 10
+  emptydrops_umi_min: 500
+  emptydrops_umi_min_frac_median: 0.01
+  emptydrops_cand_max_n: 20000
+  emptydrops_ind_min: 45000
+  emptydrops_ind_max: 90000
+  emptydrops_niters: 10000
+  emptydrops_max_attempts: 3
+  demuxmix_model: auto
+  demuxmix_pAcpt: 0.9
+  multiplet_calling_algorithm: null
+  scdblfinder_clusters: true
+  scdblfinder_dbr_sd: null
+  scdblfinder_nfeatures: 1500
+  scdblfinder_npcs: 20
+  scdblfinder_max_depth: 5
+---
+
+```{r setup, include=FALSE}
+# Set chunk options
+knitr::opts_chunk$set(
+  echo = FALSE,
+  error = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "",
+  results = "asis"
+)
+
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(Matrix)
+library(DropletUtils)
+library(demuxmix)
+library(scuttle)
+library(scater)
+library(scran)
+library(scDblFinder)
+library(Seurat)
+library(Signac)
+
+# Check if running within Snakemake pipeline
+if (exists("snakemake")) {
+  # if running within Snakemake pipeline
+  log <- file(snakemake@log[[1]], open = "w")
+  sink(log, type = "message") # write stderr to Snakemake log file
+
+  snakemake@source("utils.R")
+  snakemake@source("python.R")
+
+  unlockBinding("params", .GlobalEnv)
+  params$sample_id <- snakemake@wildcards$sample
+  params <- update.params(snakemake@params)
+  lockBinding("params", .GlobalEnv)
+
+  if (!dir.exists(dirname(snakemake@output[[1]]))) dir.create(dirname(snakemake@output[[1]]), recursive = TRUE)
+} else {
+  # if running in isolation
+  source("utils.R")
+  source("python.R")
+}
+
+# Replace path placeholders and validate params
+unlockBinding("params", .GlobalEnv)
+for (x in c("outdir", "features_matrix", "hto_matrix", "hashing_assignments", "fragments")) {
+  params[[x]] <- glue::glue(params[[x]], sample = params$sample_id)
+  if (length(params[[x]]) == 0) params[[x]] <- NULL # override default value of glue::glue() for null input (character(0)) and return null output
+}
+params$cell_calling_algorithm <- match.arg(tolower(params$cell_calling_algorithm), choices = c("emptydrops", "kmeans", "combined"))
+params$cell_calling_modalities <- match.arg(tolower(params$cell_calling_modalities), choices = c("gex", "atac", "adt"), several.ok = TRUE)
+params$demuxmix_model <- match.arg(tolower(params$demuxmix_model), choices = c("auto", "naive"))
+if (!is.null(params$multiplet_calling_algorithm)) params$multiplet_calling_algorithm <- match.arg(tolower(params$multiplet_calling_algorithm), choices = c("scdblfinder", "composite", "combined"))
+if (params$pre_demultiplexed) {
+  if (is.null(params$hashing_assignments)) stop("Hashing assignments table must be provided when using pre-demultiplexed workflow")
+  params$pre_filtered <- TRUE
+}
+lockBinding("params", .GlobalEnv)
+
+# Check for missing required params
+required <- c(
+  "sample_id",
+  "metadata",
+  "outdir",
+  "features_matrix"
+)
+is.missing <- sapply(params[required], is.null)
+if (any(is.missing)) {
+  names <- paste(names(params[required])[is.missing], collapse = ", ")
+  stop(sprintf("The following required parameters are missing: %s", names))
+}
+
+# Initialise barcodes list
+bc <- list()
+
+# Initialise list index
+list.index <- 1
+```
+
+### Sample: `r params$sample_id`
+
+# Overview
+
+```{r overview}
+cat(prepend.index("Load count matrices"), "\n")
+if (!params$pre_filtered) {
+  cat(prepend.index("Run cell calling algorithm to filter empty droplet barcodes"), "\n")
+}
+if (!params$pre_demultiplexed && !is.null(params$hto_matrix)) {
+  cat(prepend.index("Run HTO demultiplexing algorithm to classify barcodes as 'singlet' (with assigned HTO), 'multiplet', 'negative' or 'uncertain'"), "\n")
+}
+if (!is.null(params$multiplet_calling_algorithm)) {
+  multiplet.method <- switch(params$multiplet_calling_algorithm,
+    scdblfinder = "simulated doublets",
+    composite = "count modeling",
+    combined = "simulated doublets and count modeling"
+  )
+  cat(prepend.index(paste("Predict multiplets based on", multiplet.method)), "\n")
+}
+cat(prepend.index("Output TSV file containing barcode metadata"), "\n")
+if (!params$pre_filtered) {
+  cat(prepend.index("Output text file containing list of empty droplet barcodes"), "\n")
+}
+```
+
+# Data loading
+
+```{r load-metadata}
+cat("* **Metadata:**", params$metadata, "\n")
+md <- vroom::vroom(
+  params$metadata,
+  col_names = TRUE,
+  show_col_types = FALSE
+) %>%
+  filter(sample_id == params$sample_id) %>%
+  as.data.frame()
+wl <- md$hto
+```
+
+```{r load-features-matrix}
+cat("* **Features matrix:**", params$features_matrix, "\n")
+features.mat <- get.10x.h5(params$features_matrix)
+if (is.null(names(features.mat))) stop("Unable to determine feature type(s) from features matrix")
+bc$features <- colnames(features.mat[[1]])
+# translate 10x feature types
+modalities <- names(features.mat) %>%
+  case_match(
+    "Gene Expression" ~ "gex",
+    "Peaks" ~ "atac",
+    "Antibody Capture" ~ "adt",
+    .default = NA
+  )
+names(features.mat) <- modalities
+# drop unrecognized feature types
+modalities <- modalities[!is.na(modalities)]
+if (!length(modalities)) stop("No valid feature types found in features matrix")
+```
+
+```{r load-hashing-assignments, eval=params$pre_demultiplexed}
+cat("* **Hashing assignments:**", params$hashing_assignments, "\n")
+demux.res <- vroom::vroom(
+  params$hashing_assignments,
+  col_names = TRUE,
+  show_col_types = FALSE
+) %>%
+  as.data.frame()
+# Check hashing assignments table
+if (!all(c("Barcode", "Type", "Classification") %in% colnames(demux.res))) {
+  if (all(c("Barcode", "Assignment") %in% colnames(demux.res))) {
+    # Convert Cell Ranger multi hashing assignments table
+    demux.res <- demux.res %>%
+      transmute(
+        Barcode = gsub(pattern = "-1$", replacement = "", Barcode),
+        Type = case_when(
+          Assignment == "Multiplet" ~ "multiplet",
+          Assignment == "Unassigned" ~ "uncertain",
+          Assignment == "Blank" ~ "negative",
+          TRUE ~ "singlet"
+        ),
+        Classification = ifelse(Type == "singlet", Assignment, Type)
+      )
+  } else {
+    stop("Invalid format for hashing assignments table.")
+  }
+}
+demux.res <- demux.res %>% tibble::column_to_rownames("Barcode")
+if (!all(demux.res[demux.res$Type == "singlet", "Assignments", drop = TRUE] %in% wl)) stop("Hashing assignments table contains assignments not found in the sample metadata table.")
+bc$features <- intersect(rownames(demux.res), colnames(features.mat[[1]]))
+```
+
+```{r load-hto-matrix, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("* **HTO matrix:**", params$hto_matrix, "\n")
+if (grepl(pattern = ".mtx.gz$", x = params$hto_matrix)) {
+  hto.mat <- get.10x.matrix(params$hto_matrix, type = c("Antibody Capture", "Multiplexing Capture"))
+} else {
+  hto.mat <- get.barcounter.matrix(params$hto_matrix, features.pattern = paste0("^", params$hto_prefix))
+}
+hto.mat <- hto.mat[match(wl, rownames(hto.mat)), ]
+hto.mat <- hto.mat[, colSums(hto.mat) > 0] # remove cell barcodes with zero counts
+bc$hto <- colnames(hto.mat)
+```
+
+# Data processing
+
+```{r no-cell-calling, eval=params$pre_filtered}
+cells.loaded <- md$cells_loaded %>% 
+  sum() %>%
+  ifelse(. > 0, ., NA)
+bc.cells <- if (!is.null(bc$hto)) intersect(bc$features, bc$hto) else bc$features
+cc.stats <- list("loaded" = cells.loaded, "cells" = length(bc.cells), "empty" = NA, "limited" = NA)
+features.mat <- lapply(features.mat, function(x) x[, bc.cells])
+```
+
+```{r cell-calling, eval=!params$pre_filtered}
+cat("## Cell calling {.tabset}", "\n\n")
+total.counts <- mapply(
+  function(mat, type) {
+    data.frame(colSums(mat)) %>%
+      setNames(type) %>%
+      tibble::rownames_to_column("barcode")
+  },
+  mat = features.mat,
+  type = modalities,
+  SIMPLIFY = FALSE
+)
+if (length(total.counts) > 1) {
+  total.counts <- Reduce(
+    x = total.counts,
+    f = function(x, y) full_join(x, y, by = "barcode")
+  )
+} else {
+  total.counts <- total.counts[[1]]
+}
+total.counts <- filter(total.counts, if_all(everything(), function(x) !is.na(x)))
+
+cells <- list()
+empty <- list()
+cc.stats <- list("loaded" = NA, "cells" = 0, "empty" = 0, "limited" = NA)
+
+cells.loaded <- md$cells_loaded %>%
+  sum() %>%
+  ifelse(. > 0, ., NA)
+cc.stats$loaded <- cells.loaded
+if (!is.na(cells.loaded)) {
+  expected.cells <- cells.loaded * 0.7 # ~70% capture rate of cells loaded (does not need to be precise)
+} else if ("gex" %in% names(features.mat)) {
+  expected.cells <- estimate.expected.cells(colSums(features.mat[["gex"]])) # if cells loaded not available, emprically estimate expected cells using GEX UMI counts
+} else {
+  stop("Unable to estimate number of expected cells.")
+}
+
+if (params$cell_calling_algorithm %in% c("kmeans", "combined")) {
+  cc.res <- kmeans.cell.caller(
+    matrix.list = features.mat[modalities %in% params$cell_calling_modalities],
+    n.expected.cells = expected.cells,
+    ordmag.quantile = params$ordmag_quantile,
+    ordmag.ratio = params$ordmag_ratio
+  )
+  cells$kmeans <- bc$features[bc$features %in% cc.res]
+  empty$kmeans <- bc$features[!(bc$features %in% cc.res)]
+}
+if (params$cell_calling_algorithm %in% c("emptydrops", "combined")) {
+  cc.res <- emptydrops.multimodal(
+    features.mat[modalities %in% params$cell_calling_modalities],
+    n.expected.cells = expected.cells,
+    ordmag.quantile = params$ordmag_quantile,
+    ordmag.ratio = params$ordmag_ratio,
+    umi.min = params$emptydrops_umi_min,
+    umi.min.frac.median = params$emptydrops_umi_min_frac_median,
+    cand.max.n = params$emptydrops_cand_max_n,
+    ind.min = params$emptydrops_ind_min,
+    ind.max = params$emptydrops_ind_max,
+    niters = params$emptydrops_niters,
+    max.attempts = params$emptydrops_max_attempts
+  )
+  cells$ed <- bc$features[which(cc.res$FDR < 0.001)]
+  empty$ed <- bc$features[which(cc.res$FDR >= 0.001 | is.na(cc.res$FDR))]
+  cc.stats$limited <- attr(cc.res, "limited")
+}
+if (params$cell_calling_algorithm == "combined") {
+  bc$features <- intersect(cells$kmeans, cells$ed)
+  bc.empty <- intersect(empty$kmeans, empty$ed)
+} else {
+  bc$features <- cells[[1]]
+  bc.empty <- empty[[1]]
+}
+bc.cells <- if (!is.null(bc$hto)) intersect(bc$features, bc$hto) else bc$features
+cc.stats$cells <- length(bc.cells)
+cc.stats$empty <- length(bc.empty)
+
+bcrank.res <- lapply(features.mat, barcodeRanks) %>% setNames(modalities)
+features.mat <- lapply(features.mat, function(x) x[, bc.cells])
+```
+
+```{r cell-calling-classification, eval=!params$pre_filtered}
+cat("### Classification {.tabset .tabset-pills}", "\n\n")
+cat("* **Cell-containing droplets:**", cc.stats$cells %>% format(big.mark = ","), "\n")
+cat("* **Empty droplets:**", cc.stats$empty %>% format(big.mark = ","), "\n")
+cat("\n\n")
+for (modality in modalities[modalities %in% params$cell_calling_modalities]) {
+  cat("####", toupper(modality), "\n\n")
+  plot <- ggplotly(
+    bcrank.plot(
+      bcrank.res[[modality]],
+      cells = bc.cells,
+      title = "Barcode rank plot",
+      x.lab = "Rank",
+      y.lab = paste(toupper(modality), if_else(modality == "atac", "peak read", "UMI"), "count"),
+      colour.lab = "Fraction cells",
+      size = 0.1
+    ) +
+      scale_colour_gradient2(low = "#d82526", mid = "#ffc156", high = "#69b764", midpoint = 0.5),
+    width = 672,
+    height = 480
+  )
+  print(htmltools::tagList(plot))
+  cat("\n\n")
+}
+```
+
+```{r cell-calling-cross-sensitivities, eval=all(!params$pre_filtered, length(features.mat) > 1)}
+cat("### Cross-sensitivities {.tabset .tabset-pills}", "\n\n")
+for (comb in combn(modalities, 2, FUN = c, simplify = FALSE)) {
+  cat("####", toupper(comb[1]), "vs", toupper(comb[2]), "\n\n")
+  plot <- ggplotly(
+    scatter.plot(
+      data = total.counts %>%
+        mutate(type = if_else(barcode %in% bc.cells, "Cell", "Empty")) %>%
+        arrange(desc(type)) %>%
+        select(all_of(comb), type) %>%
+        distinct(),
+      x = !!sym(comb[1]),
+      y = !!sym(comb[2]),
+      colour = type,
+      size = 0.1,
+      title = "Cell assignment",
+      x.lab = paste(toupper(comb[1]), if_else(comb[1] == "atac", "peak read", "UMI"), "count", sep = " "),
+      y.lab = paste(toupper(comb[2]), if_else(comb[2] == "atac", "peak read", "UMI"), "count", sep = " "),
+      colour.lab = "Type",
+      log = TRUE
+    ) +
+      scale_colour_manual(values = list(Cell = "#69b764", Empty = "lightgrey")),
+    width = 672,
+    height = 480
+  )
+  print(htmltools::tagList(plot))
+  cat("\n\n")
+}
+```
+
+```{r cell-calling-diagnostics, eval=!params$pre_filtered}
+cat("### Diagnostics", "\n\n")
+cat("* **Algorithm:**", params$cell_calling_algorithm, "\n")
+cat("* **Modalities:**", toupper(modalities[modalities %in% params$cell_calling_modalities]) %>% paste(collapse = ", "), "\n")
+cat("* **OrdMag quantile:**", params$ordmag_quantile %>% format(big.mark = ","), "\n")
+cat("* **OrdMag ratio:**", params$ordmag_ratio %>% format(big.mark = ","), "\n")
+if (params$cell_calling_algorithm %in% c("emptydrops", "combined")) {
+  cat("* **Minimum UMI count (absolute):**", params$emptydrops_umi_min %>% format(big.mark = ","), "\n")
+  cat("* **Minimum UMI count (fraction of median):**", params$emptydrops_umi_min_frac_median %>% format(big.mark = ","), "\n")
+  cat("* **Maximum number of candidate cells:**", params$emptydrops_cand_max_n %>% format(big.mark = ","), "\n")
+  cat("* **Ambient estimation range:**", params$emptydrops_ind_min %>% format(big.mark = ","), "-", params$emptydrops_ind_max %>% format(big.mark = ","), "\n")
+  cat("* **Monte Carlo simulation iterations:**", params$emptydrops_niters %>% format(big.mark = ","), "\n")
+  cat("* **Maximum number of attempts:**", params$emptydrops_max_attempts %>% format(big.mark = ","), "\n")
+  cat("* **Limited:**", "\n")
+  cat(sprintf("  + **%s:** %s", toupper(names(cc.stats$limited)), ifelse(cc.stats$limited, "Yes", "No")) %>% paste(collapse = "\n"), "\n")
+}
+```
+
+```{r hto-demultiplexing, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("## HTO demultiplexing {.tabset}", "\n\n")
+set.seed(100)
+hto.mat <- hto.mat[, bc.cells]
+dmm <- if ("gex" %in% names(features.mat)) {
+  demuxmix(
+    hto = as.matrix(hto.mat),
+    rna = colSums(features.mat[["gex"]]),
+    model = params$demuxmix_model,
+    pAcpt = params$demuxmix_pAcpt^length(wl)
+  )
+} else {
+  demuxmix(
+    hto = as.matrix(hto.mat),
+    model = "naive",
+    pAcpt = params$demuxmix_pAcpt^length(wl)
+  )
+}
+models <- lapply(dmm@models, function(x) class(x))
+demux.res <- dmm %>%
+  dmmClassify() %>%
+  mutate(Classification = if_else(grepl(",", HTO), "multiplet", HTO))
+```
+
+```{r process-hto-demultiplexing, eval=exists("demux.res")}
+demux.stats <- demux.res %>%
+  as.data.frame() %>%
+  group_by(Classification) %>%
+  summarise(count = n())
+demux.stats <- demux.stats$count %>%
+  as.list() %>%
+  setNames(demux.stats$Classification)
+demux.stats$singlet <- sum(demux.res$Type == "singlet")
+bc.cells <- demux.res %>%
+  filter(Type %in% c("singlet", "multiplet")) %>%
+  rownames()
+features.mat <- lapply(features.mat, function(x) x[, bc.cells])
+cols <- pals::brewer.greens(max(length(wl), 3)) %>%
+  rev() %>%
+  setNames(wl)
+cols["multiplet"] <- "#d82526"
+cols["negative"] <- "lightgrey"
+cols["uncertain"] <- "#ffc156"
+```
+
+```{r hto-demultiplexing-classification, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("### Classification", "\n\n")
+cat(sprintf("* **%s:** %s", names(demux.stats)[names(demux.stats) != "singlet"], format(as.integer(demux.stats[names(demux.stats) != "singlet"]), big.mark = ",")) %>% paste(collapse = "\n"), "\n")
+cat("\n\n")
+ggplotly(
+  bar.plot(
+    data = demux.res %>% mutate(Type = factor(Type, levels = c("singlet", "multiplet", "negative", "uncertain"))),
+    pos = Type,
+    fill = Classification,
+    position = position_stack(reverse = TRUE),
+    title = "HTO assignment",
+    pos.lab = "Type",
+    fill.lab = "Classification"
+  ) +
+    scale_fill_manual(values = cols),
+  width = 672,
+  height = 480,
+  tooltip = c("fill", "x")
+)
+```
+
+```{r hto-demultiplexing-raw-counts, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("### Raw HTO counts", "\n\n")
+ggplotly(
+  logcounts.histplot(
+    hto.mat,
+    features.pattern = "^HTO_",
+    title = "HTO count distribution",
+    x.lab = "UMI count",
+    fill.lab = "HTO",
+    binwidth = 0.05,
+    alpha = 0.75
+  ) +
+    scale_fill_manual(values = cols),
+  width = 672,
+  height = 480,
+  tooltip = "fill"
+)
+```
+
+```{r hto-cross-sensitivities, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("### Cross-sensitivities {.tabset .tabset-pills}", "\n\n")
+for (comb in combn(wl, 2, FUN = c, simplify = FALSE)) {
+  cat("####", comb[1], "vs", comb[2], "\n\n")
+  plot <- ggplotly(
+    demux.plot(
+      hto.mat,
+      demux.res,
+      feature.1 = comb[1],
+      feature.2 = comb[2],
+      title = "HTO assignment",
+      size = 0.5
+    ) +
+      scale_colour_manual(values = cols),
+    width = 672,
+    height = 480
+  )
+  print(htmltools::tagList(plot))
+  cat("\n\n")
+}
+```
+
+```{r hto-demultiplexing-diagnostics, eval=all(!params$pre_demultiplexed, !is.null(params$hto_matrix))}
+cat("### Diagnostics", "\n\n")
+cat("* **Mode:**", params$demuxmix_model, "\n")
+cat("* **Chosen model:**", "\n")
+cat(sprintf("  + **%s:** %s", wl, models[wl]) %>% paste(collapse = "\n"), "\n")
+cat("* **Posterior probability threshold:**", round(params$demuxmix_pAcpt^length(wl), 2), paste0(" (", round(params$demuxmix_pAcpt, 2), " per HTO)"), "\n")
+cat("* **Fraction overlap between mixture components:**", "\n")
+cat(sprintf("  + **%s:** %s", wl, round(dmmOverlap(dmm)[wl], 3)) %>% paste(collapse = "\n"), "\n")
+```
+
+```{r multiplets, eval=any(exists("demux.res"), !is.null(params$multiplet_calling_algorithm))}
+cat("## Multiplets {.tabset}", "\n\n")
+seu <- mapply(
+  function(x, modality) {
+    obj <- CreateSeuratObject(counts = x, assay = modality, project = params$sample_id)
+    if (modality == "gex") {
+      obj <- obj %>%
+        NormalizeData(verbose = FALSE) %>%
+        FindVariableFeatures(verbose = FALSE) %>%
+        ScaleData(verbose = FALSE) %>%
+        RunPCA(verbose = FALSE)
+      return(obj)
+    } else if (modality == "atac") {
+      obj <- obj %>%
+        RunTFIDF(verbose = FALSE) %>%
+        FindTopFeatures(verbose = FALSE) %>%
+        RunSVD(verbose = FALSE)
+      return(obj)
+    }
+  },
+  x = features.mat[modalities[modalities %in% c("gex", "atac")]],
+  modality = modalities[modalities %in% c("gex", "atac")],
+  SIMPLIFY = FALSE
+)
+if (length(seu) > 1) {
+  seu[[1]][[DefaultAssay(seu[[2]])]] <- seu[[2]][[DefaultAssay(seu[[2]])]]
+  seu[[1]][[Reductions(seu[[2]])]] <- seu[[2]][[Reductions(seu[[2]])]]
+}
+seu <- seu[[1]]
+
+known <- if (exists("demux.res")) demux.res[colnames(features.mat[[1]]), "Type", drop = TRUE] == "multiplet" else rep(FALSE, times = ncol(features.mat[[1]]))
+
+if (!is.null(params$multiplet_calling_algorithm)) {
+  predicted <- list()
+  if (params$multiplet_calling_algorithm %in% c("scdblfinder", "combined")) {
+    scdblfinder.res <- mapply(
+      function(x, modality) {
+        sce <- SingleCellExperiment(assays = list(counts = x))
+        message("Running scDblFinder for ", toupper(modality))
+        set.seed(100)
+        res <- scDblFinder(
+          sce = sce,
+          clusters = params$scdblfinder_clusters,
+          dbr.sd = params$scdblfinder_dbr_sd,
+          nfeatures = params$scdblfinder_nfeatures,
+          dims = params$scdblfinder_npcs,
+          includePCs = params$scdblfinder_npcs,
+          max_depth = params$scdblfinder_max_depth,
+          aggregateFeatures = modality == "atac",
+          knownDoublets = if (any(known)) known else NULL,
+          knownUse = "discard",
+          returnType = "table"
+        ) %>%
+          as.data.frame() %>%
+          filter(type == "real")
+        res <- res[colnames(sce), ]
+        res <- res %>%
+          mutate(pvalue = 1 - score) %>%
+          select(pvalue, class)
+        return(res)
+      },
+      x = features.mat[modalities[modalities %in% c("gex", "atac")]],
+      modality = modalities[modalities %in% c("gex", "atac")],
+      SIMPLIFY = FALSE
+    )
+    if (length(scdblfinder.res) > 1) {
+      scdblfinder.res <- scdblfinder.res %>%
+        Reduce(bind_cols, .) %>%
+        mutate(
+          pvalue = apply(select(., starts_with("pvalue")), MARGIN = 1, FUN = function(x) metap::sumlog(x)$p), # Fisher method for p-value aggregation
+          class = if_else(pvalue < 0.05, "doublet", "singlet")
+        )
+    } else {
+      scdblfinder.res <- scdblfinder.res[[1]]
+    }
+    predicted$scdblfinder <- if_else(scdblfinder.res$class == "doublet", TRUE, FALSE)
+  }
+  if (params$multiplet_calling_algorithm %in% c("composite", "combined")) {
+    args <- features.mat
+    args$fragments <- params$fragments
+    composite.res <- do.call(run.composite, args)
+    predicted$composite <- if_else(composite.res$classification == "multiplet", TRUE, FALSE)
+  }
+  if (params$multiplet_calling_algorithm == "combined") {
+    predicted <- Reduce(magrittr::or, predicted) # use inclusive strategy for combining doublet predictions as methods have different strengths
+  } else {
+    predicted <- predicted[[1]]
+  }
+} else {
+  predicted <- rep(FALSE, times = ncol(features.mat[[1]]))
+}
+
+multiplet.res <- data.frame(
+  known = known,
+  predicted = predicted & !known,
+  row.names = colnames(features.mat[[1]])
+)
+multiplet.stats <- list(
+  known = sum(multiplet.res$known, na.rm = TRUE),
+  predicted = sum(multiplet.res$predicted, na.rm = TRUE),
+  singlet = sum(!multiplet.res$known & !multiplet.res$predicted, na.rm = TRUE)
+)
+multiplet.stats$multiplet <- sum(multiplet.stats$known, multiplet.stats$predicted, na.rm = TRUE)
+bc.cells <- multiplet.res %>%
+  filter(!known & !predicted) %>%
+  rownames()
+```
+
+```{r multiplets-classification, eval=any(exists("demux.res"), !is.null(params$multiplet_calling_algorithm))}
+cat("### Classification", "\n\n")
+cat("* **Singlets:**", multiplet.stats$singlet %>% format(big.mark = ","), "\n")
+if (exists("demux.res")) cat("* **Known (inter-sample) multiplets:**", multiplet.stats$known %>% format(big.mark = ","), "\n")
+if (!is.null(params$multiplet_calling_algorithm)) cat("* **Predicted multiplets:**", multiplet.stats$predicted %>% format(big.mark = ","), "\n")
+cat("\n\n")
+ggplotly(
+  multiplet.plot(
+    seu,
+    multiplet.res,
+    size = 0.1
+  ),
+  width = 672,
+  height = 480,
+  tooltip = "colour"
+)
+```
+
+```{r multiplets-diagnostics, eval=!is.null(params$multiplet_calling_algorithm)}
+cat("### Diagnostics", "\n\n")
+cat("* **Algorithm:**", params$multiplet_calling_algorithm, "\n")
+cat("* **Modalities:**", toupper(if (params$multiplet_calling_algorithm == "scdblfinder") modalities[modalities %in% c("gex", "atac")] else modalities) %>% paste(collapse = ", "), "\n")
+if (params$multiplet_calling_algorithm %in% c("scdblfinder", "combined")) {
+  cat("* **Cluster:**", ifelse(params$scdblfinder_clusters, "Yes", "No"), "\n")
+  cat("* **Doublet rate uncertainty:**", eval(if (is.null(params$scdblfinder_dbr_sd)) 0.4 else params$scdblfinder_dbr_sd) %>% format(big.mark = ","), "\n")
+  cat("* **Number of features:**", params$scdblfinder_nfeatures %>% format(big.mark = ","), "\n")
+  cat("* **Number of PCs:**", params$scdblfinder_npcs %>% format(big.mark = ","), "\n")
+  cat("* **Maximum depth:**", params$scdblfinder_max_depth %>% format(big.mark = ","), "\n")
+}
+if (exists("composite.res")) {
+  cat("* **Goodness-of-fit scores:**", "\n")
+  cat(sprintf("  + **%s:** %.2f", toupper(names(attr(composite.res, "scores"))), attr(composite.res, "scores")) %>% paste(collapse = "\n"), "\n")
+}
+```
+
+# Summary
+
+```{r output}
+metadata <- data.frame(
+  barcode = bc.cells,
+  sample_id = params$sample_id
+)
+metadata$hash_id <- if (exists("demux.res")) sapply(demux.res[metadata$barcode, ]$Classification, function(x) md[md$hto == x, "hash_id", drop = TRUE]) else md[1, "hash_id", drop = TRUE]
+metadata <- left_join(metadata, md %>% select(-c(hto, cells_loaded)) %>% distinct(), by = c("sample_id", "hash_id"))
+if (length(unique(metadata$hash_id)) == 1) metadata$hash_id <- NULL # remove hash_id column if all values are the same (i.e. no cell hashing)
+
+summary.stats <- cc.stats[c("loaded", "cells")] %>%
+  as.data.frame() %>%
+  dplyr::rename(
+    cells_loaded = loaded,
+    cells_recovered = cells
+  )
+if (exists("demux.stats")) {
+  summary.stats <- summary.stats %>%
+    cbind(demux.stats[match(c("singlet", "multiplet", "negative", "uncertain"), names(demux.stats), nomatch = 0)])
+  if ("negative" %in% colnames(summary.stats) && "uncertain" %in% colnames(summary.stats)) {
+    summary.stats <- summary.stats %>% mutate(undetermined = negative + uncertain)
+  }
+}
+if (exists("multiplet.stats")) {
+  summary.stats$singlet <- multiplet.stats$singlet
+  summary.stats$multiplet <- multiplet.stats$multiplet
+}
+summary.stats <- summary.stats[, match(c("cells_loaded", "cells_recovered", "singlet", "multiplet", "undetermined"), colnames(summary.stats), nomatch = 0), drop = FALSE] %>%
+  mutate(
+    across(
+      .cols = !starts_with("cells_"),
+      .fns = function(x) x / cells_recovered,
+      .names = "fraction_{.col}"
+    )
+  )
+
+if (!dir.exists(params$outdir)) dir.create(params$outdir, recursive = TRUE)
+vroom::vroom_write(
+  metadata,
+  file = file.path(params$outdir, "metadata.tsv.gz"),
+  delim = "\t"
+)
+vroom::vroom_write(
+  summary.stats,
+  file = file.path(params$outdir, "barcode_stats.tsv.gz"),
+  delim = "\t"
+)
+if (exists("dmm")) {
+  vroom::vroom_write(
+    dmmOverlap(dmm)[wl] %>%
+      as.matrix() %>%
+      t() %>%
+      as.data.frame(),
+    file = file.path(params$outdir, "hto_signal.tsv.gz"),
+    delim = "\t"
+  )
+}
+if (exists("bc.empty")) {
+  vroom::vroom_write_lines(
+    bc.empty,
+    file = file.path(params$outdir, "empty_droplet_barcodes.txt.gz")
+  )
+}
+
+cc.excluded <- if (exists("cc.stats")) cc.stats$empty else NA
+demux.excluded <- if (exists("demux.stats")) sum(demux.stats$negative, demux.stats$uncertain, na.rm = TRUE) else NA
+multiplet.excluded <- if (exists("multiplet.stats")) sum(multiplet.stats$known, multiplet.stats$predicted, na.rm = TRUE) else NA
+cat("* **Total barcodes passed:**", length(bc.cells) %>% format(big.mark = ","), "\n")
+cat("* **Total barcodes excluded:**", sum(cc.excluded, demux.excluded, multiplet.excluded, na.rm = TRUE) %>% format(big.mark = ","), "\n")
+if (!is.na(cc.excluded)) cat("  + **Empty droplets:**", cc.excluded %>% format(big.mark = ","), "\n")
+if (!is.na(demux.excluded)) cat("  + **Negative/uncertain HTO:**", demux.excluded %>% format(big.mark = ","), "\n")
+if (!is.na(multiplet.excluded)) cat("  + **Multiplets:**", multiplet.excluded %>% format(big.mark = ","), "\n")
+```
+
+# Session Info
+
+```{r session-info, results="markup"}
+sessionInfo()
+```
+
+# Source
+This report was automatically generated from an R Markdown script (<a download="droplet_qc.Rmd" href="`r base64enc::dataURI(file = params$rmd, mime = 'text/rmd', encoding = 'base64')`">download source</a>).

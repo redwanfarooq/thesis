@@ -1,0 +1,14 @@
+'1': Mature Naive (BACH2/SELL/IL4R)
+'10': IgA+ ASC (IGHA1/JCHAIN/MZB1)
+'11': IgG+ ASC (IGHG1/JCHAIN/MZB1)
+'12': Early ASC (TNFRSF17/PRDM1/TOX2)
+'13': T/NK Contamination
+'14': Platelet Contamination
+'2': Homeostatic Memory (BANK1/AIM2/CD27)
+'3': Survival Signalling (BCL2)
+'4': Transitional Naive (MME/CD9/CD38)
+'5': Primed Memory (IL2RA/TOX)
+'6': Activated Memory (CD80/FAS)
+'7': Housekeeping (Translation/Proliferation)
+'8': Activation Signalling (IER2/CD69/CD83)
+'9': Atypical Memory (ITGAX/TBX21/FCRL5)
