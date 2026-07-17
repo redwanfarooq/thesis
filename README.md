@@ -15,7 +15,7 @@ This repository provides the code, configuration files and software environment 
 ## Repository Structure
 
 ```
-ocrelizumab_paper/
+thesis/
 ├── 01_prepare_internal_datasets/   # Snakemake pipelines for preprocessing, QC, normalisation and integration of internal datasets
 ├── 02_prepare_external_datasets/   # Notebooks for preprocessing, normalisation and integration of external datasets
 ├── 03_annotate/                    # Notebooks for clustering and cell type annotation
@@ -44,12 +44,12 @@ All software dependencies for the Jupyter notebooks are specified in [`envs/envi
 To create the Conda environment, first install Anaconda or Miniconda (see [installation instructions](https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html)), then run:
 ```bash
 conda env create -f envs/environment.yaml
-conda activate ocrelizumab_paper
+conda activate farooq_dphil
 ```
 
 Next, to install the Jupyter kernel for running R notebooks, run:
 ```bash
-Rscript -e 'IRkernel::installspec(name = "ir-ocrelizumab_paper", displayname = "R 4.3 (ocrelizumab_paper)")'
+Rscript -e 'IRkernel::installspec(name = "ir-farooq_dphil", displayname = "R 4.3 (farooq_dphil)")'
 ```
 
 ## Data Availability
@@ -99,4 +99,4 @@ For questions about the code, please contact Redwan Farooq ([redwan.farooq@ndcn.
 
 ---
 
-**Last updated**: 24/04/2026
+**Last updated**: 17/07/2026
