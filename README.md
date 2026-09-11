@@ -2,7 +2,8 @@
 
 This repository contains the analysis code and workflow for my DPhil thesis:
 
-**Characterising the effect of therapeutic intervention to discover pathogenic immune interactions in multiple sclerosis**
+**Characterising the effect of therapeutic intervention to discover pathogenic immune interactions in multiple sclerosis**  
+2026. **DOI:** [10.5287/ora-dazxvjvpj](https://dx.doi.org/10.5287/ora-dazxvjvpj)
 
 ## Overview
 
@@ -56,7 +57,7 @@ Rscript -e 'IRkernel::installspec(name = "ir-farooq_dphil", displayname = "R 4.3
 
 ### Input Data
 Internal datasets:
-- FASTQ files for internal CITE-seq datasets will be deposited in EGA (accession pending)
+- FASTQ files for internal CITE-seq datasets have been deposited in EGA (accession EGAS50000002112)
 - Processed data for internal CITE-seq datasets have been deposited in GEO (accession GSE316688):
     - Unfiltered per-sample GEX and ADT count matrices
     - QC-filtered and annotated datasets (Seurat/RDS and MuData/H5MU formats) - download to `data/processed/cite_seq/cohort_treatment_naive/annotated/` and `data/processed/cite_seq/cohort_nonresponders/annotated/`
@@ -99,4 +100,4 @@ For questions about the code, please contact Redwan Farooq ([redwan.farooq@ndcn.
 
 ---
 
-**Last updated**: 17/07/2026
+**Last updated**: 11/09/2026
