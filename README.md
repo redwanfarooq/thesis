@@ -65,7 +65,7 @@ Internal datasets:
 External datasets:
 - Cantoni et al. (2025): Synapse (accession syn51730532) - download to `data/processed/external/cantoni/source/`
 - Absinta et al. (2021): GEO (accession GSE180759) - download to `data/processed/external/lesion_rims/absinta/source/`
-- Lerma-Martin et al. (2024): EGA (accession EGAC50000000231) - download to `data/processed/external/lesion_rims/lerma_martin/source/`
+- Lerma-Martin et al. (2024): EGA (accession EGAS50000000354) - download to `data/processed/external/lesion_rims/lerma_martin/source/`
 - Kaufmann et al. (2021): GEO (accession GSE144744) - download to `data/processed/external/kaufmann/source/`
 
 ### Metadata
